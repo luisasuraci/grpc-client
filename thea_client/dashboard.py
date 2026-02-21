@@ -29,6 +29,12 @@ def db_uri(args: argparse.Namespace) -> str:
     return f"{scheme}://{args.db_user}:{args.db_password}@{args.db_host}:{args.db_port}/{args.db_name}"
 
 
+def _clear_filters() -> None:
+    st.session_state["tag_filter"] = ""
+    st.session_state["start_ts"] = ""
+    st.session_state["end_ts"] = ""
+
+
 def main() -> None:
     args = parse_args()
     engine = create_engine(db_uri(args), pool_pre_ping=True)
@@ -54,11 +60,7 @@ def main() -> None:
     with f4:
         st.write("")
         st.write("")
-        if st.button("Pulisci filtri", use_container_width=True):
-            st.session_state["tag_filter"] = ""
-            st.session_state["start_ts"] = ""
-            st.session_state["end_ts"] = ""
-            st.rerun()
+        st.button("Pulisci filtri", use_container_width=True, on_click=_clear_filters)
 
     start_ms = int(start) if start.strip() else None
     end_ms = int(end) if end.strip() else None
@@ -107,7 +109,9 @@ def main() -> None:
     chart_df = (
         df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
     )
-    fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag")
+    chart_df = chart_df.sort_values(["tag", "timestamp"])
+    fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag", markers=True)
+    fig.update_traces(mode="lines+markers")
     st.plotly_chart(fig, use_container_width=True)
 
 
