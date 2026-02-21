@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 import plotly.express as px

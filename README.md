@@ -107,6 +107,8 @@ streamlit run thea_client/dashboard.py -- \
   --db-password pass
 ```
 
+> Esegui il comando dalla root del repository (`grpc-client`).
+
 Funzionalità dashboard:
 - filtro tag (contains);
 - filtro intervallo timestamp (epoch ms);
