@@ -168,7 +168,7 @@ def main() -> None:
         )
         if conds:
             chart_query = chart_query.where(and_(*conds))
-        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr).order_by(chart_bucket_expr.asc(), SignalRecord.tag.asc())
+        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr).order_by(SignalRecord.tag.asc(), chart_bucket_expr.asc())
         with st.spinner("Caricamento dati grafico segnali..."):
             chart_rows = session.execute(chart_query).all()
 
@@ -203,7 +203,6 @@ def main() -> None:
             return
         chart_df["timestamp_ms"] = chart_df["timestamp_raw"].astype("int64").apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
-        chart_df = chart_df.sort_values(["tag", "timestamp"])
 
     # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
     # i punti si sovrappongono; applichiamo un offset minimo sull'asse X solo per visualizzazione.
@@ -213,8 +212,18 @@ def main() -> None:
         chart_df["_tag_idx"] = chart_df["tag"].astype("category").cat.codes
         chart_df["timestamp_plot"] = chart_df["timestamp"] + pd.to_timedelta(chart_df["_tag_idx"] * 120, unit="ms")
 
-    fig = px.line(chart_df, x="timestamp_plot", y="count", color="tag", title="Rate segnali per tag")
-    fig.update_traces(mode="lines+markers", marker={"size": 8})
+    fig = px.line(
+        chart_df,
+        x="timestamp_plot",
+        y="count",
+        color="tag",
+        title="Rate segnali per tag",
+        render_mode="webgl",
+    )
+    if len(chart_df) > 5000:
+        fig.update_traces(mode="lines")
+    else:
+        fig.update_traces(mode="lines+markers", marker={"size": 8})
     fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
     st.plotly_chart(fig, use_container_width=True)
 
