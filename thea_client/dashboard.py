@@ -117,7 +117,7 @@ def main() -> None:
             page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
         offset = (int(page) - 1) * page_size
 
-        table_query = select(
+        base_filtered_query = select(
             SignalRecord.tag,
             SignalRecord.timestamp_ms,
             SignalRecord.value_text,
@@ -126,14 +126,21 @@ def main() -> None:
             SignalRecord.payload_size_bytes,
         )
         if conds:
-            table_query = table_query.where(and_(*conds))
-        table_query = table_query.order_by(SignalRecord.timestamp_ms.asc()).offset(offset).limit(page_size)
+            base_filtered_query = base_filtered_query.where(and_(*conds))
+
+        table_query = (
+            base_filtered_query
+            .order_by(SignalRecord.timestamp_ms.asc())
+            .offset(offset)
+            .limit(page_size)
+        )
         with st.spinner("Caricamento tabella segnali..."):
             rows = session.execute(table_query).all()
 
-        chart_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
-        if conds:
-            chart_query = chart_query.where(and_(*conds))
+        chart_query = (
+            base_filtered_query.with_only_columns(SignalRecord.tag, SignalRecord.timestamp_ms)
+            .order_by(SignalRecord.timestamp_ms.asc())
+        )
         with st.spinner("Caricamento dati grafico segnali..."):
             chart_rows = session.execute(chart_query).all()
 
