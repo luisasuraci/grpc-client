@@ -36,20 +36,24 @@ def main() -> None:
     st.set_page_config(page_title="Thea Signals Dashboard", layout="wide")
     st.title("TheaQ - Statistiche segnali")
 
-    with st.sidebar:
-        st.header("Filtri")
+    if "tag_filter" not in st.session_state:
+        st.session_state["tag_filter"] = ""
+    if "start_ts" not in st.session_state:
+        st.session_state["start_ts"] = ""
+    if "end_ts" not in st.session_state:
+        st.session_state["end_ts"] = ""
 
-        if "tag_filter" not in st.session_state:
-            st.session_state["tag_filter"] = ""
-        if "start_ts" not in st.session_state:
-            st.session_state["start_ts"] = ""
-        if "end_ts" not in st.session_state:
-            st.session_state["end_ts"] = ""
-
+    st.subheader("Filtri")
+    f1, f2, f3, f4 = st.columns([3, 2, 2, 1.5])
+    with f1:
         tag_filter = st.text_input("Cerca tag (contains)", key="tag_filter")
+    with f2:
         start = st.text_input("Timestamp start (ms)", key="start_ts")
+    with f3:
         end = st.text_input("Timestamp end (ms)", key="end_ts")
-
+    with f4:
+        st.write("")
+        st.write("")
         if st.button("Pulisci filtri", use_container_width=True):
             st.session_state["tag_filter"] = ""
             st.session_state["start_ts"] = ""
