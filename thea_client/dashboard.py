@@ -159,18 +159,6 @@ def main() -> None:
         with st.spinner("Caricamento tabella segnali..."):
             rows = session.execute(table_query).all()
 
-        chart_bucket_size = 60 if timestamps_are_seconds else 60000
-        chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
-        chart_query = select(
-            SignalRecord.tag,
-            chart_bucket_expr,
-            func.count(SignalRecord.id).label("count"),
-        )
-        if conds:
-            chart_query = chart_query.where(and_(*conds))
-        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr).order_by(SignalRecord.tag.asc(), chart_bucket_expr.asc())
-        with st.spinner("Caricamento dati grafico segnali..."):
-            chart_rows = session.execute(chart_query).all()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
@@ -190,6 +178,22 @@ def main() -> None:
     if using_default_window:
         st.caption("Filtro temporale di default attivo: ultima ora.")
 
+    chart_loading = st.empty()
+    chart_loading.info("Caricamento grafico segnali in corso...")
+    with Session(engine) as session:
+        chart_bucket_size = 60 if timestamps_are_seconds else 60000
+        chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
+        chart_query = select(
+            SignalRecord.tag,
+            chart_bucket_expr,
+            func.count(SignalRecord.id).label("count"),
+        )
+        if conds:
+            chart_query = chart_query.where(and_(*conds))
+        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
+        chart_rows = session.execute(chart_query).all()
+    chart_loading.empty()
+
     chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
@@ -203,6 +207,7 @@ def main() -> None:
             return
         chart_df["timestamp_ms"] = chart_df["timestamp_raw"].astype("int64").apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
+        chart_df = chart_df.sort_values(["tag", "timestamp"])
 
     # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
     # i punti si sovrappongono; applichiamo un offset minimo sull'asse X solo per visualizzazione.
