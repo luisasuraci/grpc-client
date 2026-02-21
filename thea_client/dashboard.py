@@ -69,54 +69,76 @@ def main() -> None:
         st.write("")
         st.button("Pulisci filtri", use_container_width=True, on_click=_clear_filters)
 
-    with Session(engine) as session:
-        tag_conds = []
-        if tag_filter.strip():
-            tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
+    tag_conds = []
+    if tag_filter.strip():
+        tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
 
+    with Session(engine) as session:
         max_ts_scope_query = select(func.max(SignalRecord.timestamp_ms))
         if tag_conds:
             max_ts_scope_query = max_ts_scope_query.where(and_(*tag_conds))
         max_ts_scope = session.execute(max_ts_scope_query).scalar_one()
 
-        timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
-        unit_factor = 1 if timestamps_are_seconds else 1000
+    timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
+    unit_factor = 1 if timestamps_are_seconds else 1000
 
-        def ui_ms_to_raw(value: int) -> int:
-            return value // 1000 if timestamps_are_seconds else value
+    def ui_ms_to_raw(value: int) -> int:
+        return value // 1000 if timestamps_are_seconds else value
 
-        start_raw = ui_ms_to_raw(int(start)) if start.strip() else None
-        end_raw = ui_ms_to_raw(int(end)) if end.strip() else None
+    start_raw = ui_ms_to_raw(int(start)) if start.strip() else None
+    end_raw = ui_ms_to_raw(int(end)) if end.strip() else None
 
-        time_conds = []
-        using_default_window = False
-        if start_raw is not None:
-            time_conds.append(SignalRecord.timestamp_ms >= start_raw)
-        if end_raw is not None:
-            time_conds.append(SignalRecord.timestamp_ms <= end_raw)
+    time_conds = []
+    using_default_window = False
+    if start_raw is not None:
+        time_conds.append(SignalRecord.timestamp_ms >= start_raw)
+    if end_raw is not None:
+        time_conds.append(SignalRecord.timestamp_ms <= end_raw)
 
-        if start_raw is None and end_raw is None and max_ts_scope is not None:
-            using_default_window = True
-            default_start = int(max_ts_scope) - (DEFAULT_WINDOW_SECONDS * unit_factor)
-            time_conds.append(SignalRecord.timestamp_ms >= default_start)
-            time_conds.append(SignalRecord.timestamp_ms <= int(max_ts_scope))
+    if start_raw is None and end_raw is None and max_ts_scope is not None:
+        using_default_window = True
+        default_start = int(max_ts_scope) - (DEFAULT_WINDOW_SECONDS * unit_factor)
+        time_conds.append(SignalRecord.timestamp_ms >= default_start)
+        time_conds.append(SignalRecord.timestamp_ms <= int(max_ts_scope))
 
-        conds = [*tag_conds, *time_conds]
+    conds = [*tag_conds, *time_conds]
 
+    # Chiamata 1: statistiche globali (metriche dashboard)
+    with Session(engine) as session:
         total = session.execute(select(func.count(SignalRecord.id))).scalar_one()
         filtered_count_query = select(func.count(SignalRecord.id))
         if conds:
             filtered_count_query = filtered_count_query.where(and_(*conds))
         filtered_total = session.execute(filtered_count_query).scalar_one()
 
-        pager1, pager2 = st.columns([1, 1])
-        with pager1:
-            page_size = st.selectbox("Righe per pagina", [50, 100, 250, 500, 1000], index=0)
-        total_pages = max(1, math.ceil(filtered_total / page_size)) if filtered_total else 1
-        with pager2:
-            page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
-        offset = (int(page) - 1) * page_size
+        metrics_query = select(
+            func.count(SignalRecord.id),
+            func.coalesce(func.sum(SignalRecord.payload_size_bytes), 0),
+            func.min(SignalRecord.timestamp_ms),
+            func.max(SignalRecord.timestamp_ms),
+        )
+        if conds:
+            metrics_query = metrics_query.where(and_(*conds))
+        count_signals, total_bytes, min_ts, max_ts = session.execute(metrics_query).one()
 
+        if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
+            rpm = 0.0
+            thr = 0.0
+        else:
+            span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
+            rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
+            thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
+
+    pager1, pager2 = st.columns([1, 1])
+    with pager1:
+        page_size = st.selectbox("Righe per pagina", [50, 100, 250, 500, 1000], index=0)
+    total_pages = max(1, math.ceil(filtered_total / page_size)) if filtered_total else 1
+    with pager2:
+        page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
+    offset = (int(page) - 1) * page_size
+
+    # Chiamata 2: dettaglio tabella + dati grafico
+    with Session(engine) as session:
         base_filtered_query = select(
             SignalRecord.tag,
             SignalRecord.timestamp_ms,
@@ -149,24 +171,6 @@ def main() -> None:
         chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr).order_by(chart_bucket_expr.asc(), SignalRecord.tag.asc())
         with st.spinner("Caricamento dati grafico segnali..."):
             chart_rows = session.execute(chart_query).all()
-
-        metrics_query = select(
-            func.count(SignalRecord.id),
-            func.coalesce(func.sum(SignalRecord.payload_size_bytes), 0),
-            func.min(SignalRecord.timestamp_ms),
-            func.max(SignalRecord.timestamp_ms),
-        )
-        if conds:
-            metrics_query = metrics_query.where(and_(*conds))
-        count_signals, total_bytes, min_ts, max_ts = session.execute(metrics_query).one()
-
-        if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
-            rpm = 0.0
-            thr = 0.0
-        else:
-            span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
-            rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
-            thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
