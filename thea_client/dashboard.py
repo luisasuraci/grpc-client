@@ -137,10 +137,16 @@ def main() -> None:
         with st.spinner("Caricamento tabella segnali..."):
             rows = session.execute(table_query).all()
 
-        chart_query = (
-            base_filtered_query.with_only_columns(SignalRecord.tag, SignalRecord.timestamp_ms)
-            .order_by(SignalRecord.timestamp_ms.asc())
+        chart_bucket_size = 60 if timestamps_are_seconds else 60000
+        chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
+        chart_query = select(
+            SignalRecord.tag,
+            chart_bucket_expr,
+            func.count(SignalRecord.id).label("count"),
         )
+        if conds:
+            chart_query = chart_query.where(and_(*conds))
+        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr).order_by(chart_bucket_expr.asc(), SignalRecord.tag.asc())
         with st.spinner("Caricamento dati grafico segnali..."):
             chart_rows = session.execute(chart_query).all()
 
@@ -180,15 +186,14 @@ def main() -> None:
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
 
-    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_ms"])
+    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
     with st.spinner("Rendering grafico segnali..."):
-        chart_df["timestamp_ms"] = chart_df["timestamp_ms"].apply(_normalize_epoch_ms)
+        chart_df["timestamp_ms"] = chart_df["timestamp_raw"].apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
-        chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
     # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
