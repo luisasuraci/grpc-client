@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import plotly.express as px
@@ -137,28 +138,48 @@ def main() -> None:
         page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
     offset = (int(page) - 1) * page_size
 
-    # Chiamata 2: dettaglio tabella + dati grafico
-    with Session(engine) as session:
-        base_filtered_query = select(
-            SignalRecord.tag,
-            SignalRecord.timestamp_ms,
-            SignalRecord.value_text,
-            SignalRecord.value_type,
-            SignalRecord.quality,
-            SignalRecord.payload_size_bytes,
-        )
-        if conds:
-            base_filtered_query = base_filtered_query.where(and_(*conds))
+    chart_bucket_size = 60 if timestamps_are_seconds else 60000
 
-        table_query = (
-            base_filtered_query
-            .order_by(SignalRecord.timestamp_ms.asc())
-            .offset(offset)
-            .limit(page_size)
-        )
-        with st.spinner("Caricamento tabella segnali..."):
-            rows = session.execute(table_query).all()
+    def load_table_rows() -> list[tuple]:
+        with Session(engine) as session:
+            base_filtered_query = select(
+                SignalRecord.tag,
+                SignalRecord.timestamp_ms,
+                SignalRecord.value_text,
+                SignalRecord.value_type,
+                SignalRecord.quality,
+                SignalRecord.payload_size_bytes,
+            )
+            if conds:
+                base_filtered_query = base_filtered_query.where(and_(*conds))
 
+            table_query = (
+                base_filtered_query
+                .order_by(SignalRecord.timestamp_ms.asc())
+                .offset(offset)
+                .limit(page_size)
+            )
+            return session.execute(table_query).all()
+
+    def load_chart_rows() -> list[tuple]:
+        with Session(engine) as session:
+            chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
+            chart_query = select(
+                SignalRecord.tag,
+                chart_bucket_expr,
+                func.count(SignalRecord.id).label("count"),
+            )
+            if conds:
+                chart_query = chart_query.where(and_(*conds))
+            chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
+            return session.execute(chart_query).all()
+
+    with st.spinner("Caricamento tabella e grafico segnali in parallelo..."):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            rows_future = executor.submit(load_table_rows)
+            chart_future = executor.submit(load_chart_rows)
+            rows = rows_future.result()
+            chart_rows = chart_future.result()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
@@ -178,24 +199,18 @@ def main() -> None:
     if using_default_window:
         st.caption("Filtro temporale di default attivo: ultima ora.")
 
-    st.info("Grafico calcolato sulla pagina corrente della tabella per mantenere l'interfaccia reattiva.")
+    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
+    if chart_df.empty:
+        st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
+        return
 
-    with st.spinner("Rendering grafico segnali (pagina corrente) in corso..."):
-        chart_source_df = df[["tag", "timestamp_ms"]].copy()
-        chart_source_df = chart_source_df.dropna(subset=["tag", "timestamp_ms"])
-        if chart_source_df.empty:
-            st.info("Nessun dato disponibile per il grafico nella pagina corrente.")
+    with st.spinner("Rendering grafico segnali (tutti i tag nel range filtrato) in corso..."):
+        chart_df["timestamp_raw"] = pd.to_numeric(chart_df["timestamp_raw"], errors="coerce")
+        chart_df = chart_df.dropna(subset=["timestamp_raw"])
+        if chart_df.empty:
+            st.info("Nessun dato timestamp valido disponibile per il grafico con i filtri correnti.")
             return
-
-        chart_base_bucket_size = 60 if timestamps_are_seconds else 60000
-        chart_bucket_expr = (chart_source_df["timestamp_ms"] // chart_base_bucket_size) * chart_base_bucket_size
-        chart_source_df["timestamp_bucket"] = chart_bucket_expr.astype("int64")
-
-        chart_df = (
-            chart_source_df.groupby(["tag", "timestamp_bucket"], as_index=False)
-            .size()
-            .rename(columns={"size": "count", "timestamp_bucket": "timestamp_ms"})
-        )
+        chart_df["timestamp_ms"] = chart_df["timestamp_raw"].astype("int64").apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
@@ -210,17 +225,17 @@ def main() -> None:
             x="timestamp_plot",
             y="count",
             color="tag",
-            title="Rate segnali per tag (pagina corrente)",
+            title="Rate segnali per tag",
             render_mode="webgl",
         )
-        if len(chart_df) > 1500:
+        if len(chart_df) > 5000:
             fig.update_traces(mode="lines")
         else:
             fig.update_traces(mode="lines+markers", marker={"size": 8})
         fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
         st.plotly_chart(fig, use_container_width=True)
 
-    st.caption(f"Bucket grafico attuale: {chart_base_bucket_size} {'secondi' if timestamps_are_seconds else 'ms'} (pagina corrente).")
+    st.caption(f"Bucket grafico attuale: {chart_bucket_size} {'secondi' if timestamps_are_seconds else 'ms'} (tutti i tag).")
 
     if overlapping_points:
         st.caption("Nota: per evitare sovrapposizione visiva tra tag nello stesso minuto, il grafico applica un leggero offset orizzontale ai punti.")
