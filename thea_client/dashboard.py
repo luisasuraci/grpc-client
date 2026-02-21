@@ -179,17 +179,21 @@ def main() -> None:
         chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
-    # Se la pagina corrente è molto densa su pochi istanti, il line chart sovrappone i punti
-    # e sembra mostrarne solo uno. In quel caso uso un bar chart per tag.
-    if chart_df["timestamp"].nunique() <= 2:
-        by_tag = chart_df.groupby("tag", as_index=False)["count"].sum().sort_values("count", ascending=False)
-        fig = px.bar(by_tag, x="tag", y="count", title="Segnali per tag (pagina corrente)")
-        fig.update_layout(xaxis_title="tag", yaxis_title="count")
-    else:
-        fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag")
-        fig.update_traces(mode="lines+markers")
+    # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
+    # i punti si sovrappongono; applichiamo un offset minimo sull'asse X solo per visualizzazione.
+    chart_df["timestamp_plot"] = chart_df["timestamp"]
+    overlapping_points = chart_df["timestamp"].nunique() <= 2
+    if overlapping_points:
+        chart_df["_tag_idx"] = chart_df["tag"].astype("category").cat.codes
+        chart_df["timestamp_plot"] = chart_df["timestamp"] + pd.to_timedelta(chart_df["_tag_idx"] * 120, unit="ms")
 
+    fig = px.line(chart_df, x="timestamp_plot", y="count", color="tag", title="Rate segnali per tag")
+    fig.update_traces(mode="lines+markers", marker={"size": 8})
+    fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
     st.plotly_chart(fig, use_container_width=True)
+
+    if overlapping_points:
+        st.caption("Nota: per evitare sovrapposizione visiva tra tag nello stesso minuto, il grafico applica un leggero offset orizzontale ai punti.")
 
 
 if __name__ == "__main__":
