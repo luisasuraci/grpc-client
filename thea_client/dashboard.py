@@ -127,7 +127,7 @@ def main() -> None:
         )
         if conds:
             table_query = table_query.where(and_(*conds))
-        table_query = table_query.order_by(SignalRecord.timestamp_ms.desc()).offset(offset).limit(page_size)
+        table_query = table_query.order_by(SignalRecord.timestamp_ms.asc()).offset(offset).limit(page_size)
         with st.spinner("Caricamento tabella segnali..."):
             rows = session.execute(table_query).all()
 
