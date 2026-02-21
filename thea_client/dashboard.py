@@ -37,6 +37,12 @@ def _clear_filters() -> None:
     st.session_state["end_ts"] = ""
 
 
+def _normalize_epoch_ms(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return value * 1000 if value < 1_000_000_000_000 else value
+
+
 def main() -> None:
     args = parse_args()
     engine = create_engine(db_uri(args), pool_pre_ping=True)
@@ -63,12 +69,12 @@ def main() -> None:
 
     chart_window_min = st.selectbox(
         "Finestra grafico di default (usata solo se start/end sono vuoti)",
-        options=[30, 60, 180, 360, 720, 1440],
-        index=2,
+        options=["Tutto", 30, 60, 180, 360, 720, 1440],
+        index=0,
     )
 
-    start_ms = int(start) if start.strip() else None
-    end_ms = int(end) if end.strip() else None
+    start_ms = _normalize_epoch_ms(int(start)) if start.strip() else None
+    end_ms = _normalize_epoch_ms(int(end)) if end.strip() else None
 
     with Session(engine) as session:
         tag_conds = []
@@ -115,13 +121,13 @@ def main() -> None:
         thr = throughput_bytes_per_second(session, start_ms, end_ms)
 
         chart_conds = list(tag_conds)
-        if start_ms is None and end_ms is None:
+        if start_ms is None and end_ms is None and chart_window_min != "Tutto":
             max_ts_query = select(func.max(SignalRecord.timestamp_ms))
             if chart_conds:
                 max_ts_query = max_ts_query.where(and_(*chart_conds))
-            max_ts = session.execute(max_ts_query).scalar_one()
+            max_ts = _normalize_epoch_ms(session.execute(max_ts_query).scalar_one())
             if max_ts is not None:
-                chart_start_ms = int(max_ts) - chart_window_min * 60 * 1000
+                chart_start_ms = int(max_ts) - int(chart_window_min) * 60 * 1000
                 chart_conds.append(SignalRecord.timestamp_ms >= chart_start_ms)
         else:
             if start_ms is not None:
@@ -146,6 +152,7 @@ def main() -> None:
     if df.empty:
         st.warning("Nessun segnale trovato con i filtri impostati.")
     else:
+        df["timestamp_ms"] = df["timestamp_ms"].apply(_normalize_epoch_ms)
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
 
@@ -154,6 +161,7 @@ def main() -> None:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
+    chart_df["timestamp_ms"] = chart_df["timestamp_ms"].apply(_normalize_epoch_ms)
     chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
     chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
     chart_df = chart_df.sort_values(["tag", "timestamp"])
