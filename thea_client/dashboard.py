@@ -16,7 +16,7 @@ else:
     from .db import SignalRecord
 
 
-DEFAULT_WINDOW_SECONDS = 1800
+DEFAULT_WINDOW_SECONDS = 900
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dashboard segnali Thea")
@@ -197,7 +197,7 @@ def main() -> None:
 
     st.caption(f"Pagina {int(page)} di {total_pages}")
     if using_default_window:
-        st.caption("Filtro temporale di default attivo: ultimi 30 minuti.")
+        st.caption("Filtro temporale di default attivo: ultimi 15 minuti.")
 
     chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
