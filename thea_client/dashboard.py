@@ -131,6 +131,12 @@ def main() -> None:
         with st.spinner("Caricamento tabella segnali..."):
             rows = session.execute(table_query).all()
 
+        chart_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
+        if conds:
+            chart_query = chart_query.where(and_(*conds))
+        with st.spinner("Caricamento dati grafico segnali..."):
+            chart_rows = session.execute(chart_query).all()
+
         metrics_query = select(
             func.count(SignalRecord.id),
             func.coalesce(func.sum(SignalRecord.payload_size_bytes), 0),
@@ -167,13 +173,12 @@ def main() -> None:
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
 
-    chart_df = pd.DataFrame(rows, columns=["tag", "timestamp_ms", "value", "value_type", "quality", "payload_bytes"])
+    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_ms"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
-    with st.spinner("Caricamento grafico segnali..."):
-        chart_df = chart_df[["tag", "timestamp_ms"]].copy()
+    with st.spinner("Rendering grafico segnali..."):
         chart_df["timestamp_ms"] = chart_df["timestamp_ms"].apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
         chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
