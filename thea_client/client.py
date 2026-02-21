@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -14,7 +15,6 @@ from sqlalchemy.orm import Session
 from thea_client.db import DbConfig, SignalRecord, create_db_engine, init_schema, save_subscription_tags
 
 import thea_pb2
-import thea_pb2_grpc
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-name", required=True)
     parser.add_argument("--db-user", required=True)
     parser.add_argument("--db-password", required=True)
+
+    parser.add_argument("--rpc-service", default="TheaQ.TheaService", help="Nome servizio gRPC completo (es. TheaQ.TheaService)")
+    parser.add_argument("--rpc-gettags", default="getTags", help="Nome metodo unary per recuperare i tag")
+    parser.add_argument("--rpc-subscribetags", default="subscribeTags", help="Nome metodo stream per la subscribe")
 
     parser.add_argument("--log-dir", default="logs")
     return parser.parse_args()
@@ -91,6 +95,37 @@ def build_secure_channel(cfg: GrpcConfig) -> grpc.Channel:
     return grpc.secure_channel(cfg.target, creds, options=options)
 
 
+def _rpc_candidates(primary_service: str) -> list[str]:
+    candidates = [primary_service]
+    fallback = [
+        "TheaService",
+        "TheaQ.TheaService",
+        "SqService",
+        "SeaQ.SqService",
+        "sqbj.dataserver.service.grpc.definitions.TheaService",
+    ]
+    for c in fallback:
+        if c not in candidates:
+            candidates.append(c)
+    return candidates
+
+
+def _build_unary_call(channel: grpc.Channel, service: str, method: str) -> Callable[[thea_pb2.Void], thea_pb2.TheaSubscriptions]:
+    return channel.unary_unary(
+        f"/{service}/{method}",
+        request_serializer=thea_pb2.Void.SerializeToString,
+        response_deserializer=thea_pb2.TheaSubscriptions.FromString,
+    )
+
+
+def _build_stream_call(channel: grpc.Channel, service: str, method: str) -> Callable[[thea_pb2.TheaSubscriptions], object]:
+    return channel.unary_stream(
+        f"/{service}/{method}",
+        request_serializer=thea_pb2.TheaSubscriptions.SerializeToString,
+        response_deserializer=thea_pb2.TheaSignals.FromString,
+    )
+
+
 def decode_signal_value(signal: thea_pb2.TheaSignal) -> tuple[str, str]:
     field = signal.WhichOneof("value")
     if field is None:
@@ -121,15 +156,36 @@ def run_client(args: argparse.Namespace) -> None:
     while True:
         try:
             channel = build_secure_channel(grpc_cfg)
-            stub = thea_pb2_grpc.TheaServiceStub(channel)
 
-            tags_response = stub.getTags(thea_pb2.Void(), timeout=20)
+            tags_response = None
+            selected_service = None
+            last_unimplemented = None
+            for service_name in _rpc_candidates(args.rpc_service):
+                get_tags = _build_unary_call(channel, service_name, args.rpc_gettags)
+                try:
+                    tags_response = get_tags(thea_pb2.Void(), timeout=20)
+                    selected_service = service_name
+                    logger.info("Service gRPC selezionato: %s", selected_service)
+                    break
+                except grpc.RpcError as exc:
+                    if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                        last_unimplemented = exc
+                        logger.warning("Metodo non trovato su service=%s (/%s/%s)", service_name, service_name, args.rpc_gettags)
+                        continue
+                    raise
+
+            if tags_response is None:
+                if last_unimplemented is not None:
+                    raise last_unimplemented
+                raise RuntimeError("Impossibile risolvere il metodo getTags su tutti i service candidati")
+
             tags = list(tags_response.tag)
             logger.info("Lista tag ricevuta da getTags (%d): %s", len(tags), ", ".join(tags))
             save_subscription_tags(engine, run_id, tags)
 
             req = thea_pb2.TheaSubscriptions(tag=tags)
-            stream = stub.subscribeTags(req)
+            subscribe_tags = _build_stream_call(channel, selected_service, args.rpc_subscribetags)
+            stream = subscribe_tags(req)
 
             with Session(engine) as session:
                 for packet in stream:

@@ -63,7 +63,10 @@ python -m thea_client.client \
   --db-port 5432 \
   --db-name thea \
   --db-user user \
-  --db-password pass
+  --db-password pass \
+  --rpc-service TheaQ.TheaService \
+  --rpc-gettags getTags \
+  --rpc-subscribetags subscribeTags
 ```
 
 Per MariaDB:
@@ -73,6 +76,14 @@ Per MariaDB:
 ```
 
 `--target` indica l'endpoint di connessione (`host:port`), mentre `--grpc-host` imposta l'hostname TLS usato per la validazione mTLS (CN/SAN del certificato server).
+
+Se ricevi `StatusCode.UNIMPLEMENTED` con messaggio `Method not found`, configura i nomi RPC del server:
+
+```bash
+--rpc-service <Package.Service> --rpc-gettags <nome_metodo_get> --rpc-subscribetags <nome_metodo_subscribe>
+```
+
+Il client prova anche automaticamente alcuni service name comuni (es. `TheaService`, `TheaQ.TheaService`, `SqService`) per ridurre problemi di compatibilità.
 
 ### Keepalive / connessione persistente
 
