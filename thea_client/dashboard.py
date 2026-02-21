@@ -192,7 +192,12 @@ def main() -> None:
         return
 
     with st.spinner("Rendering grafico segnali..."):
-        chart_df["timestamp_ms"] = chart_df["timestamp_raw"].apply(_normalize_epoch_ms)
+        chart_df["timestamp_raw"] = pd.to_numeric(chart_df["timestamp_raw"], errors="coerce")
+        chart_df = chart_df.dropna(subset=["timestamp_raw"])
+        if chart_df.empty:
+            st.info("Nessun dato timestamp valido disponibile per il grafico con i filtri correnti.")
+            return
+        chart_df["timestamp_ms"] = chart_df["timestamp_raw"].astype("int64").apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
