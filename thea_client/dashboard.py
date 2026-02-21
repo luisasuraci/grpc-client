@@ -69,67 +69,47 @@ def main() -> None:
         st.write("")
         st.button("Pulisci filtri", use_container_width=True, on_click=_clear_filters)
 
-    with Session(engine) as session:
-        tag_conds = []
-        if tag_filter.strip():
-            tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
+    tag_conds = []
+    if tag_filter.strip():
+        tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
 
+    with Session(engine) as session:
         max_ts_scope_query = select(func.max(SignalRecord.timestamp_ms))
         if tag_conds:
             max_ts_scope_query = max_ts_scope_query.where(and_(*tag_conds))
         max_ts_scope = session.execute(max_ts_scope_query).scalar_one()
 
-        timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
-        unit_factor = 1 if timestamps_are_seconds else 1000
+    timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
+    unit_factor = 1 if timestamps_are_seconds else 1000
 
-        def ui_ms_to_raw(value: int) -> int:
-            return value // 1000 if timestamps_are_seconds else value
+    def ui_ms_to_raw(value: int) -> int:
+        return value // 1000 if timestamps_are_seconds else value
 
-        start_raw = ui_ms_to_raw(int(start)) if start.strip() else None
-        end_raw = ui_ms_to_raw(int(end)) if end.strip() else None
+    start_raw = ui_ms_to_raw(int(start)) if start.strip() else None
+    end_raw = ui_ms_to_raw(int(end)) if end.strip() else None
 
-        time_conds = []
-        using_default_window = False
-        if start_raw is not None:
-            time_conds.append(SignalRecord.timestamp_ms >= start_raw)
-        if end_raw is not None:
-            time_conds.append(SignalRecord.timestamp_ms <= end_raw)
+    time_conds = []
+    using_default_window = False
+    if start_raw is not None:
+        time_conds.append(SignalRecord.timestamp_ms >= start_raw)
+    if end_raw is not None:
+        time_conds.append(SignalRecord.timestamp_ms <= end_raw)
 
-        if start_raw is None and end_raw is None and max_ts_scope is not None:
-            using_default_window = True
-            default_start = int(max_ts_scope) - (DEFAULT_WINDOW_SECONDS * unit_factor)
-            time_conds.append(SignalRecord.timestamp_ms >= default_start)
-            time_conds.append(SignalRecord.timestamp_ms <= int(max_ts_scope))
+    if start_raw is None and end_raw is None and max_ts_scope is not None:
+        using_default_window = True
+        default_start = int(max_ts_scope) - (DEFAULT_WINDOW_SECONDS * unit_factor)
+        time_conds.append(SignalRecord.timestamp_ms >= default_start)
+        time_conds.append(SignalRecord.timestamp_ms <= int(max_ts_scope))
 
-        conds = [*tag_conds, *time_conds]
+    conds = [*tag_conds, *time_conds]
 
+    # Chiamata 1: statistiche globali (metriche dashboard)
+    with Session(engine) as session:
         total = session.execute(select(func.count(SignalRecord.id))).scalar_one()
         filtered_count_query = select(func.count(SignalRecord.id))
         if conds:
             filtered_count_query = filtered_count_query.where(and_(*conds))
         filtered_total = session.execute(filtered_count_query).scalar_one()
-
-        pager1, pager2 = st.columns([1, 1])
-        with pager1:
-            page_size = st.selectbox("Righe per pagina", [50, 100, 250, 500, 1000], index=0)
-        total_pages = max(1, math.ceil(filtered_total / page_size)) if filtered_total else 1
-        with pager2:
-            page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
-        offset = (int(page) - 1) * page_size
-
-        table_query = select(
-            SignalRecord.tag,
-            SignalRecord.timestamp_ms,
-            SignalRecord.value_text,
-            SignalRecord.value_type,
-            SignalRecord.quality,
-            SignalRecord.payload_size_bytes,
-        )
-        if conds:
-            table_query = table_query.where(and_(*conds))
-        table_query = table_query.order_by(SignalRecord.timestamp_ms.asc()).offset(offset).limit(page_size)
-        with st.spinner("Caricamento tabella segnali..."):
-            rows = session.execute(table_query).all()
 
         metrics_query = select(
             func.count(SignalRecord.id),
@@ -149,15 +129,42 @@ def main() -> None:
             rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
             thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
+    pager1, pager2 = st.columns([1, 1])
+    with pager1:
+        page_size = st.selectbox("Righe per pagina", [50, 100, 250, 500, 1000], index=0)
+    total_pages = max(1, math.ceil(filtered_total / page_size)) if filtered_total else 1
+    with pager2:
+        page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
+    offset = (int(page) - 1) * page_size
+
+    # Chiamata 2: dettaglio tabella + dati grafico
+    with Session(engine) as session:
+        base_filtered_query = select(
+            SignalRecord.tag,
+            SignalRecord.timestamp_ms,
+            SignalRecord.value_text,
+            SignalRecord.value_type,
+            SignalRecord.quality,
+            SignalRecord.payload_size_bytes,
+        )
+        if conds:
+            base_filtered_query = base_filtered_query.where(and_(*conds))
+
+        table_query = (
+            base_filtered_query
+            .order_by(SignalRecord.timestamp_ms.asc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        with st.spinner("Caricamento tabella segnali..."):
+            rows = session.execute(table_query).all()
+
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
     c2.metric("Segnali filtrati", filtered_total)
     c3.metric("Rate", f"{rpm:.2f} segnali/min")
     c4.metric("Throughput", f"{thr:.2f} B/s")
-
-    st.caption(f"Pagina {int(page)} di {total_pages}")
-    if using_default_window:
-        st.caption("Filtro temporale di default attivo: ultima ora.")
 
     df = pd.DataFrame(rows, columns=["tag", "timestamp_ms", "value", "value_type", "quality", "payload_bytes"])
     if df.empty:
@@ -167,16 +174,39 @@ def main() -> None:
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
 
-    chart_df = pd.DataFrame(rows, columns=["tag", "timestamp_ms", "value", "value_type", "quality", "payload_bytes"])
+    st.caption(f"Pagina {int(page)} di {total_pages}")
+    if using_default_window:
+        st.caption("Filtro temporale di default attivo: ultima ora.")
+
+    chart_loading = st.empty()
+    chart_loading.info("Caricamento grafico segnali in corso...")
+    with Session(engine) as session:
+        chart_bucket_size = 60 if timestamps_are_seconds else 60000
+        chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
+        chart_query = select(
+            SignalRecord.tag,
+            chart_bucket_expr,
+            func.count(SignalRecord.id).label("count"),
+        )
+        if conds:
+            chart_query = chart_query.where(and_(*conds))
+        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
+        chart_rows = session.execute(chart_query).all()
+    chart_loading.empty()
+
+    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
-    with st.spinner("Caricamento grafico segnali..."):
-        chart_df = chart_df[["tag", "timestamp_ms"]].copy()
-        chart_df["timestamp_ms"] = chart_df["timestamp_ms"].apply(_normalize_epoch_ms)
+    with st.spinner("Rendering grafico segnali..."):
+        chart_df["timestamp_raw"] = pd.to_numeric(chart_df["timestamp_raw"], errors="coerce")
+        chart_df = chart_df.dropna(subset=["timestamp_raw"])
+        if chart_df.empty:
+            st.info("Nessun dato timestamp valido disponibile per il grafico con i filtri correnti.")
+            return
+        chart_df["timestamp_ms"] = chart_df["timestamp_raw"].astype("int64").apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
-        chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
     # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
@@ -187,8 +217,18 @@ def main() -> None:
         chart_df["_tag_idx"] = chart_df["tag"].astype("category").cat.codes
         chart_df["timestamp_plot"] = chart_df["timestamp"] + pd.to_timedelta(chart_df["_tag_idx"] * 120, unit="ms")
 
-    fig = px.line(chart_df, x="timestamp_plot", y="count", color="tag", title="Rate segnali per tag")
-    fig.update_traces(mode="lines+markers", marker={"size": 8})
+    fig = px.line(
+        chart_df,
+        x="timestamp_plot",
+        y="count",
+        color="tag",
+        title="Rate segnali per tag",
+        render_mode="webgl",
+    )
+    if len(chart_df) > 5000:
+        fig.update_traces(mode="lines")
+    else:
+        fig.update_traces(mode="lines+markers", marker={"size": 8})
     fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
     st.plotly_chart(fig, use_container_width=True)
 
