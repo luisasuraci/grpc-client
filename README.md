@@ -53,8 +53,8 @@ Questo comando genera `thea_pb2.py` e `thea_pb2_grpc.py` in root progetto.
 
 ```bash
 python -m thea_client.client \
-  --grpc-host <HOST> \
-  --grpc-port <PORT> \
+  --target <HOST:PORT> \
+  --grpc-host <TLS_SERVER_HOSTNAME> \
   --rootca rootca.crt \
   --client-crt client.crt \
   --client-key client.key \
@@ -71,6 +71,8 @@ Per MariaDB:
 ```bash
 --db-backend mariadb --db-port 3306
 ```
+
+`--target` indica l'endpoint di connessione (`host:port`), mentre `--grpc-host` imposta l'hostname TLS usato per la validazione mTLS (CN/SAN del certificato server).
 
 ### Keepalive / connessione persistente
 

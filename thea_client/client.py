@@ -19,8 +19,8 @@ import thea_pb2_grpc
 
 @dataclass(frozen=True)
 class GrpcConfig:
-    host: str
-    port: int
+    target: str
+    grpc_host: str
     root_ca: str
     client_cert: str
     client_key: str
@@ -28,8 +28,8 @@ class GrpcConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Client TheaQ: getTags + subscribeTags con MTLS")
-    parser.add_argument("--grpc-host", required=True)
-    parser.add_argument("--grpc-port", type=int, required=True)
+    parser.add_argument("--target", required=True, help="Target gRPC host:port usato per la connessione")
+    parser.add_argument("--grpc-host", required=True, help="Hostname TLS atteso nel certificato server (CN/SAN)")
 
     parser.add_argument("--rootca", default="rootca.crt")
     parser.add_argument("--client-crt", default="client.crt")
@@ -84,8 +84,11 @@ def build_secure_channel(cfg: GrpcConfig) -> grpc.Channel:
         ("grpc.http2.min_time_between_pings_ms", 10_000),
         ("grpc.http2.min_ping_interval_without_data_ms", 10_000),
     ]
-    target = f"{cfg.host}:{cfg.port}"
-    return grpc.secure_channel(target, creds, options=options)
+    options += [
+        ("grpc.ssl_target_name_override", cfg.grpc_host),
+        ("grpc.default_authority", cfg.grpc_host),
+    ]
+    return grpc.secure_channel(cfg.target, creds, options=options)
 
 
 def decode_signal_value(signal: thea_pb2.TheaSignal) -> tuple[str, str]:
@@ -111,7 +114,7 @@ def run_client(args: argparse.Namespace) -> None:
     engine = create_db_engine(db_cfg)
     init_schema(engine)
 
-    grpc_cfg = GrpcConfig(args.grpc_host, args.grpc_port, args.rootca, args.client_crt, args.client_key)
+    grpc_cfg = GrpcConfig(args.target, args.grpc_host, args.rootca, args.client_crt, args.client_key)
     logger.info("Avvio client run_id=%s log_file=%s", run_id, log_path)
 
     backoff = 1
