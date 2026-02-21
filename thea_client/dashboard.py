@@ -10,9 +10,12 @@ from sqlalchemy import and_, create_engine, func, select
 from sqlalchemy.orm import Session
 
 if __package__ in {None, ""}:
-    from db import SignalRecord, throughput_bytes_per_second, rate_per_minute
+    from db import SignalRecord
 else:
-    from .db import SignalRecord, throughput_bytes_per_second, rate_per_minute
+    from .db import SignalRecord
+
+
+DEFAULT_WINDOW_SECONDS = 3600
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,28 +70,41 @@ def main() -> None:
         st.write("")
         st.button("Pulisci filtri", use_container_width=True, on_click=_clear_filters)
 
-    chart_window_min = st.selectbox(
-        "Finestra grafico di default (usata solo se start/end sono vuoti)",
-        options=["Tutto", 30, 60, 180, 360, 720, 1440],
-        index=0,
-    )
-
-    start_ms = _normalize_epoch_ms(int(start)) if start.strip() else None
-    end_ms = _normalize_epoch_ms(int(end)) if end.strip() else None
-
     with Session(engine) as session:
         tag_conds = []
         if tag_filter.strip():
             tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
 
-        conds = list(tag_conds)
-        if start_ms is not None:
-            conds.append(SignalRecord.timestamp_ms >= start_ms)
-        if end_ms is not None:
-            conds.append(SignalRecord.timestamp_ms <= end_ms)
+        max_ts_scope_query = select(func.max(SignalRecord.timestamp_ms))
+        if tag_conds:
+            max_ts_scope_query = max_ts_scope_query.where(and_(*tag_conds))
+        max_ts_scope = session.execute(max_ts_scope_query).scalar_one()
+
+        timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
+        unit_factor = 1 if timestamps_are_seconds else 1000
+
+        def ui_ms_to_raw(value: int) -> int:
+            return value // 1000 if timestamps_are_seconds else value
+
+        start_raw = ui_ms_to_raw(int(start)) if start.strip() else None
+        end_raw = ui_ms_to_raw(int(end)) if end.strip() else None
+
+        time_conds = []
+        using_default_window = False
+        if start_raw is not None:
+            time_conds.append(SignalRecord.timestamp_ms >= start_raw)
+        if end_raw is not None:
+            time_conds.append(SignalRecord.timestamp_ms <= end_raw)
+
+        if start_raw is None and end_raw is None and max_ts_scope is not None:
+            using_default_window = True
+            default_start = int(max_ts_scope) - (DEFAULT_WINDOW_SECONDS * unit_factor)
+            time_conds.append(SignalRecord.timestamp_ms >= default_start)
+            time_conds.append(SignalRecord.timestamp_ms <= int(max_ts_scope))
+
+        conds = [*tag_conds, *time_conds]
 
         total = session.execute(select(func.count(SignalRecord.id))).scalar_one()
-
         filtered_count_query = select(func.count(SignalRecord.id))
         if conds:
             filtered_count_query = filtered_count_query.where(and_(*conds))
@@ -100,10 +116,9 @@ def main() -> None:
         total_pages = max(1, math.ceil(filtered_total / page_size)) if filtered_total else 1
         with pager2:
             page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
-
         offset = (int(page) - 1) * page_size
 
-        query = select(
+        table_query = select(
             SignalRecord.tag,
             SignalRecord.timestamp_ms,
             SignalRecord.value_text,
@@ -112,32 +127,31 @@ def main() -> None:
             SignalRecord.payload_size_bytes,
         )
         if conds:
-            query = query.where(and_(*conds))
-        query = query.order_by(SignalRecord.timestamp_ms.desc()).offset(offset).limit(page_size)
+            table_query = table_query.where(and_(*conds))
+        table_query = table_query.order_by(SignalRecord.timestamp_ms.desc()).offset(offset).limit(page_size)
+        rows = session.execute(table_query).all()
 
-        rows = session.execute(query).all()
+        metrics_query = select(
+            func.count(SignalRecord.id),
+            func.coalesce(func.sum(SignalRecord.payload_size_bytes), 0),
+            func.min(SignalRecord.timestamp_ms),
+            func.max(SignalRecord.timestamp_ms),
+        )
+        if conds:
+            metrics_query = metrics_query.where(and_(*conds))
+        count_signals, total_bytes, min_ts, max_ts = session.execute(metrics_query).one()
 
-        rpm = rate_per_minute(session, start_ms, end_ms)
-        thr = throughput_bytes_per_second(session, start_ms, end_ms)
-
-        chart_conds = list(tag_conds)
-        if start_ms is None and end_ms is None and chart_window_min != "Tutto":
-            max_ts_query = select(func.max(SignalRecord.timestamp_ms))
-            if chart_conds:
-                max_ts_query = max_ts_query.where(and_(*chart_conds))
-            max_ts = _normalize_epoch_ms(session.execute(max_ts_query).scalar_one())
-            if max_ts is not None:
-                chart_start_ms = int(max_ts) - int(chart_window_min) * 60 * 1000
-                chart_conds.append(SignalRecord.timestamp_ms >= chart_start_ms)
+        if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
+            rpm = 0.0
+            thr = 0.0
         else:
-            if start_ms is not None:
-                chart_conds.append(SignalRecord.timestamp_ms >= start_ms)
-            if end_ms is not None:
-                chart_conds.append(SignalRecord.timestamp_ms <= end_ms)
+            span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
+            rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
+            thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
         chart_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
-        if chart_conds:
-            chart_query = chart_query.where(and_(*chart_conds))
+        if conds:
+            chart_query = chart_query.where(and_(*conds))
         chart_rows = session.execute(chart_query).all()
 
     c1, c2, c3, c4 = st.columns(4)
@@ -147,6 +161,8 @@ def main() -> None:
     c4.metric("Throughput", f"{thr:.2f} B/s")
 
     st.caption(f"Pagina {int(page)} di {total_pages}")
+    if using_default_window:
+        st.caption("Filtro temporale di default attivo: ultima ora.")
 
     df = pd.DataFrame(rows, columns=["tag", "timestamp_ms", "value", "value_type", "quality", "payload_bytes"])
     if df.empty:
