@@ -155,7 +155,7 @@ def main() -> None:
 
             table_query = (
                 base_filtered_query
-                .order_by(SignalRecord.timestamp_ms.asc())
+                .order_by(SignalRecord.timestamp_ms.asc(), SignalRecord.id.asc())
                 .offset(offset)
                 .limit(page_size)
             )
@@ -193,6 +193,7 @@ def main() -> None:
     else:
         df["timestamp_ms"] = df["timestamp_ms"].apply(_normalize_epoch_ms)
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
+        df = df.sort_values(["timestamp_ms", "tag"], kind="stable").reset_index(drop=True)
         st.dataframe(df, use_container_width=True)
 
     st.caption(f"Pagina {int(page)} di {total_pages}")
