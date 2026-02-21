@@ -18,6 +18,7 @@ else:
 DEFAULT_WINDOW_SECONDS = 3600
 MAX_CHART_SERIES = 20
 MAX_CHART_POINTS = 5000
+MAX_CHART_SOURCE_ROWS = 200000
 
 
 def parse_args() -> argparse.Namespace:
@@ -155,26 +156,34 @@ def main() -> None:
         span_raw = (int(max_ts) - int(min_ts)) if (min_ts is not None and max_ts is not None) else 0
         span_seconds = (span_raw / unit_factor) if span_raw > 0 else DEFAULT_WINDOW_SECONDS
 
-        tags_query = select(SignalRecord.tag, func.count(SignalRecord.id).label("cnt"))
+        chart_source_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
         if conds:
-            tags_query = tags_query.where(and_(*conds))
-        tags_query = tags_query.group_by(SignalRecord.tag).order_by(func.count(SignalRecord.id).desc()).limit(MAX_CHART_SERIES)
-        top_tags = [r[0] for r in session.execute(tags_query).all()]
+            chart_source_query = chart_source_query.where(and_(*conds))
+        chart_source_query = chart_source_query.order_by(SignalRecord.timestamp_ms.desc()).limit(MAX_CHART_SOURCE_ROWS)
+        chart_source = chart_source_query.subquery("chart_source")
 
-        target_points_per_series = max(20, MAX_CHART_POINTS // max(1, len(top_tags) or 1))
+        top_tags_query = (
+            select(chart_source.c.tag, func.count().label("cnt"))
+            .group_by(chart_source.c.tag)
+            .order_by(func.count().desc())
+            .limit(MAX_CHART_SERIES)
+        )
+        top_tags = [r[0] for r in session.execute(top_tags_query).all()]
+
+        target_points_per_series = max(20, MAX_CHART_POINTS // max(1, len(top_tags)))
         bucket_seconds = max(60, int(span_seconds / target_points_per_series))
         bucket_seconds = min(bucket_seconds, 3600)
 
         bucket_divisor = bucket_seconds * unit_factor
-        chart_bucket = func.floor(SignalRecord.timestamp_ms / bucket_divisor).label("bucket")
+        chart_bucket = func.floor(chart_source.c.timestamp_ms / bucket_divisor).label("bucket")
 
-        chart_query = select(SignalRecord.tag, chart_bucket, func.count(SignalRecord.id).label("count"))
-        chart_conds = list(conds)
+        chart_query = select(chart_source.c.tag, chart_bucket, func.count().label("count"))
+        chart_conds = []
         if top_tags:
-            chart_conds.append(SignalRecord.tag.in_(top_tags))
+            chart_conds.append(chart_source.c.tag.in_(top_tags))
         if chart_conds:
             chart_query = chart_query.where(and_(*chart_conds))
-        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket).order_by(SignalRecord.tag, chart_bucket)
+        chart_query = chart_query.group_by(chart_source.c.tag, chart_bucket).order_by(chart_source.c.tag, chart_bucket)
         with st.spinner("Caricamento grafico segnali..."):
             chart_rows = session.execute(chart_query).all()
 
@@ -215,10 +224,10 @@ def main() -> None:
     fig.update_traces(mode="lines")
     st.plotly_chart(fig, use_container_width=True)
 
-    if top_tags and filtered_total > len(chart_df):
+    if filtered_total > MAX_CHART_SOURCE_ROWS:
         st.caption(
-            f"Grafico ottimizzato: mostrati i {len(top_tags)} tag con più dati, "
-            f"bucket temporale {bucket_seconds}s."
+            f"Grafico ottimizzato su ultimi {MAX_CHART_SOURCE_ROWS} segnali: "
+            f"{len(top_tags)} tag, bucket {bucket_seconds}s."
         )
 
 
