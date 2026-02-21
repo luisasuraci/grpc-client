@@ -178,28 +178,25 @@ def main() -> None:
     if using_default_window:
         st.caption("Filtro temporale di default attivo: ultima ora.")
 
-    chart_loading = st.empty()
-    chart_loading.info("Caricamento grafico segnali in corso...")
-    with Session(engine) as session:
-        chart_bucket_size = 60 if timestamps_are_seconds else 60000
-        chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
-        chart_query = select(
-            SignalRecord.tag,
-            chart_bucket_expr,
-            func.count(SignalRecord.id).label("count"),
-        )
-        if conds:
-            chart_query = chart_query.where(and_(*conds))
-        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
-        chart_rows = session.execute(chart_query).all()
-    chart_loading.empty()
+    with st.spinner("Caricamento e rendering grafico segnali in corso..."):
+        with Session(engine) as session:
+            chart_bucket_size = 60 if timestamps_are_seconds else 60000
+            chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
+            chart_query = select(
+                SignalRecord.tag,
+                chart_bucket_expr,
+                func.count(SignalRecord.id).label("count"),
+            )
+            if conds:
+                chart_query = chart_query.where(and_(*conds))
+            chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
+            chart_rows = session.execute(chart_query).all()
 
-    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
-    if chart_df.empty:
-        st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
-        return
+        chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
+        if chart_df.empty:
+            st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
+            return
 
-    with st.spinner("Rendering grafico segnali..."):
         chart_df["timestamp_raw"] = pd.to_numeric(chart_df["timestamp_raw"], errors="coerce")
         chart_df = chart_df.dropna(subset=["timestamp_raw"])
         if chart_df.empty:
