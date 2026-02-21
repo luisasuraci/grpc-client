@@ -129,7 +129,8 @@ def main() -> None:
         if conds:
             table_query = table_query.where(and_(*conds))
         table_query = table_query.order_by(SignalRecord.timestamp_ms.desc()).offset(offset).limit(page_size)
-        rows = session.execute(table_query).all()
+        with st.spinner("Caricamento tabella segnali..."):
+            rows = session.execute(table_query).all()
 
         metrics_query = select(
             func.count(SignalRecord.id),
@@ -152,7 +153,8 @@ def main() -> None:
         chart_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
         if conds:
             chart_query = chart_query.where(and_(*conds))
-        chart_rows = session.execute(chart_query).all()
+        with st.spinner("Caricamento grafico segnali..."):
+            chart_rows = session.execute(chart_query).all()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
