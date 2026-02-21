@@ -16,10 +16,6 @@ else:
 
 
 DEFAULT_WINDOW_SECONDS = 3600
-MAX_CHART_SERIES = 20
-MAX_CHART_POINTS = 5000
-MAX_CHART_SOURCE_ROWS = 200000
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dashboard segnali Thea")
@@ -115,7 +111,7 @@ def main() -> None:
 
         pager1, pager2 = st.columns([1, 1])
         with pager1:
-            page_size = st.selectbox("Righe per pagina", [100, 250, 500, 1000], index=1)
+            page_size = st.selectbox("Righe per pagina", [50, 100, 250, 500, 1000], index=0)
         total_pages = max(1, math.ceil(filtered_total / page_size)) if filtered_total else 1
         with pager2:
             page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
@@ -153,40 +149,6 @@ def main() -> None:
             rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
             thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
-        span_raw = (int(max_ts) - int(min_ts)) if (min_ts is not None and max_ts is not None) else 0
-        span_seconds = (span_raw / unit_factor) if span_raw > 0 else DEFAULT_WINDOW_SECONDS
-
-        chart_source_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
-        if conds:
-            chart_source_query = chart_source_query.where(and_(*conds))
-        chart_source_query = chart_source_query.order_by(SignalRecord.timestamp_ms.desc()).limit(MAX_CHART_SOURCE_ROWS)
-        chart_source = chart_source_query.subquery("chart_source")
-
-        top_tags_query = (
-            select(chart_source.c.tag, func.count().label("cnt"))
-            .group_by(chart_source.c.tag)
-            .order_by(func.count().desc())
-            .limit(MAX_CHART_SERIES)
-        )
-        top_tags = [r[0] for r in session.execute(top_tags_query).all()]
-
-        target_points_per_series = max(20, MAX_CHART_POINTS // max(1, len(top_tags)))
-        bucket_seconds = max(60, int(span_seconds / target_points_per_series))
-        bucket_seconds = min(bucket_seconds, 3600)
-
-        bucket_divisor = bucket_seconds * unit_factor
-        chart_bucket = func.floor(chart_source.c.timestamp_ms / bucket_divisor).label("bucket")
-
-        chart_query = select(chart_source.c.tag, chart_bucket, func.count().label("count"))
-        chart_conds = []
-        if top_tags:
-            chart_conds.append(chart_source.c.tag.in_(top_tags))
-        if chart_conds:
-            chart_query = chart_query.where(and_(*chart_conds))
-        chart_query = chart_query.group_by(chart_source.c.tag, chart_bucket).order_by(chart_source.c.tag, chart_bucket)
-        with st.spinner("Caricamento grafico segnali..."):
-            chart_rows = session.execute(chart_query).all()
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
     c2.metric("Segnali filtrati", filtered_total)
@@ -205,30 +167,21 @@ def main() -> None:
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
 
-    chart_df = pd.DataFrame(chart_rows, columns=["tag", "bucket", "count"])
+    chart_df = pd.DataFrame(rows, columns=["tag", "timestamp_ms", "value", "value_type", "quality", "payload_bytes"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
-    chart_df["timestamp_ms"] = chart_df["bucket"].astype("int64") * bucket_seconds * 1000
-    chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
+    with st.spinner("Caricamento grafico segnali..."):
+        chart_df = chart_df[["tag", "timestamp_ms"]].copy()
+        chart_df["timestamp_ms"] = chart_df["timestamp_ms"].apply(_normalize_epoch_ms)
+        chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
+        chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
+        chart_df = chart_df.sort_values(["tag", "timestamp"])
 
-    fig = px.line(
-        chart_df,
-        x="timestamp",
-        y="count",
-        color="tag",
-        title="Rate segnali per tag",
-        render_mode="webgl",
-    )
-    fig.update_traces(mode="lines")
+    fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag")
+    fig.update_traces(mode="lines+markers")
     st.plotly_chart(fig, use_container_width=True)
-
-    if filtered_total > MAX_CHART_SOURCE_ROWS:
-        st.caption(
-            f"Grafico ottimizzato su ultimi {MAX_CHART_SOURCE_ROWS} segnali: "
-            f"{len(top_tags)} tag, bucket {bucket_seconds}s."
-        )
 
 
 if __name__ == "__main__":
