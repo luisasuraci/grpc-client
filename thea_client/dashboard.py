@@ -150,7 +150,18 @@ def main() -> None:
             rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
             thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
-        chart_query = select(SignalRecord.tag, SignalRecord.timestamp_ms)
+        bucket_divisor = 60 * unit_factor
+        chart_bucket = func.floor(SignalRecord.timestamp_ms / bucket_divisor).label("bucket_min")
+
+        chart_query = (
+            select(
+                SignalRecord.tag,
+                chart_bucket,
+                func.count(SignalRecord.id).label("count"),
+            )
+            .group_by(SignalRecord.tag, chart_bucket)
+            .order_by(SignalRecord.tag, chart_bucket)
+        )
         if conds:
             chart_query = chart_query.where(and_(*conds))
         with st.spinner("Caricamento grafico segnali..."):
@@ -174,15 +185,13 @@ def main() -> None:
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
 
-    chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_ms"])
+    chart_df = pd.DataFrame(chart_rows, columns=["tag", "bucket_min", "count"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
-    chart_df["timestamp_ms"] = chart_df["timestamp_ms"].apply(_normalize_epoch_ms)
+    chart_df["timestamp_ms"] = chart_df["bucket_min"].astype("int64") * 60 * 1000
     chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
-    chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
-    chart_df = chart_df.sort_values(["tag", "timestamp"])
 
     fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag", markers=True)
     fig.update_traces(mode="lines+markers")
