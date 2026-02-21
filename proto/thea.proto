@@ -1,0 +1,53 @@
+syntax = "proto3";
+package TheaQ;
+
+option java_package = "sqbj.dataserver.service.grpc.definitions";
+
+service TheaService {
+    rpc getTags(Void) returns (TheaSubscriptions) {}
+    rpc subscribeTags(TheaSubscriptions) returns (stream TheaSignals) {}
+    rpc unsubscribeTags(TheaSubscriptions) returns (Void) {}
+}
+
+message Void {}
+
+message TheaSubscriptions {
+    repeated string tag = 1;
+}
+
+message TheaSignals {
+    repeated TheaSignal signals = 1;
+}
+
+enum SqQuality {
+    OK = 0;
+    UNABLE_TO_CONNECT = 1;
+    LOST_CONNECT = 2;
+    DOES_NOT_EXIST = 3;
+    INVALID_INPUT = 4;
+    PROCESSING_ERROR = 5;
+    PASSIVE = 6;
+    INTERNAL_SERVER_ERROR = 101;
+    BELOW_MINIMUM = 401;
+    ABOVE_MAXIMUM = 402;
+    ILLEGAL_VALUE = 403;
+    TIMEOUT = 501;
+    WAGO_BROKEN_OR_READING_BELOW = 701;
+    WAGO_READING_ABOVE = 702;
+    UNDER_RANGE = 901;
+    OVER_RANGE = 902;
+}
+
+message TheaSignal {
+    string tag = 1;
+    SqQuality quality = 2;
+    uint64 timestamp = 3;
+    optional string unit = 4;
+    oneof value {
+        float float = 5;
+        bool boolean = 6;
+        string string = 7;
+        uint32 integer = 8;
+        uint64 long = 9;
+    }
+}
