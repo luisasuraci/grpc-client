@@ -178,71 +178,27 @@ def main() -> None:
     if using_default_window:
         st.caption("Filtro temporale di default attivo: ultima ora.")
 
-    chart_options_col1, chart_options_col2 = st.columns([1, 1])
-    with chart_options_col1:
-        chart_target_buckets = st.selectbox(
-            "Dettaglio grafico (bucket temporali)",
-            [300, 600, 1200, 2400],
-            index=1,
-            help="Valori più alti mostrano più dettaglio ma richiedono più tempo di rendering.",
-        )
-    with chart_options_col2:
-        chart_max_tags = st.selectbox(
-            "Max tag nel grafico",
-            [10, 20, 50, 100],
-            index=1,
-            help="Limita i tag visualizzati per evitare blocchi del browser con dataset grandi.",
-        )
+    st.info("Grafico calcolato sulla pagina corrente della tabella per mantenere l'interfaccia reattiva.")
 
-    st.info("Caricamento dati grafico in corso. Il rendering nel browser può richiedere alcuni secondi su dataset grandi.")
+    with st.spinner("Rendering grafico segnali (pagina corrente) in corso..."):
+        chart_source_df = df[["tag", "timestamp_ms"]].copy()
+        chart_source_df = chart_source_df.dropna(subset=["tag", "timestamp_ms"])
+        if chart_source_df.empty:
+            st.info("Nessun dato disponibile per il grafico nella pagina corrente.")
+            return
 
-    with st.spinner("Caricamento e rendering grafico segnali in corso..."):
         chart_base_bucket_size = 60 if timestamps_are_seconds else 60000
-        if min_ts is None or max_ts is None:
-            chart_bucket_size = chart_base_bucket_size
-        else:
-            span_raw = max(1, int(max_ts) - int(min_ts))
-            dynamic_bucket = max(chart_base_bucket_size, math.ceil(span_raw / chart_target_buckets))
-            chart_bucket_size = ((dynamic_bucket + chart_base_bucket_size - 1) // chart_base_bucket_size) * chart_base_bucket_size
+        chart_bucket_expr = (chart_source_df["timestamp_ms"] // chart_base_bucket_size) * chart_base_bucket_size
+        chart_source_df["timestamp_bucket"] = chart_bucket_expr.astype("int64")
 
-        with Session(engine) as session:
-            chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
-            chart_query = select(
-                SignalRecord.tag,
-                chart_bucket_expr,
-                func.count(SignalRecord.id).label("count"),
-            )
-            if conds:
-                chart_query = chart_query.where(and_(*conds))
-            chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
-            chart_rows = session.execute(chart_query).all()
-
-        chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
-        if chart_df.empty:
-            st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
-            return
-
-        chart_df["timestamp_raw"] = pd.to_numeric(chart_df["timestamp_raw"], errors="coerce")
-        chart_df = chart_df.dropna(subset=["timestamp_raw"])
-        if chart_df.empty:
-            st.info("Nessun dato timestamp valido disponibile per il grafico con i filtri correnti.")
-            return
-
-        total_tags = chart_df["tag"].nunique()
-        top_tags = (
-            chart_df.groupby("tag", as_index=False)["count"]
-            .sum()
-            .sort_values("count", ascending=False)
-            .head(chart_max_tags)["tag"]
+        chart_df = (
+            chart_source_df.groupby(["tag", "timestamp_bucket"], as_index=False)
+            .size()
+            .rename(columns={"size": "count", "timestamp_bucket": "timestamp_ms"})
         )
-        chart_df = chart_df[chart_df["tag"].isin(top_tags)].copy()
-
-        chart_df["timestamp_ms"] = chart_df["timestamp_raw"].astype("int64").apply(_normalize_epoch_ms)
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
-        # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
-        # i punti si sovrappongono; applichiamo un offset minimo sull'asse X solo per visualizzazione.
         chart_df["timestamp_plot"] = chart_df["timestamp"]
         overlapping_points = chart_df["timestamp"].nunique() <= 2
         if overlapping_points:
@@ -254,7 +210,7 @@ def main() -> None:
             x="timestamp_plot",
             y="count",
             color="tag",
-            title="Rate segnali per tag",
+            title="Rate segnali per tag (pagina corrente)",
             render_mode="webgl",
         )
         if len(chart_df) > 1500:
@@ -264,9 +220,7 @@ def main() -> None:
         fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
         st.plotly_chart(fig, use_container_width=True)
 
-    st.caption(f"Bucket grafico attuale: {chart_bucket_size} {'secondi' if timestamps_are_seconds else 'ms'}.")
-    if total_tags > chart_max_tags:
-        st.caption(f"Visualizzati i {chart_max_tags} tag più attivi su {total_tags} totali per migliorare la responsività.")
+    st.caption(f"Bucket grafico attuale: {chart_base_bucket_size} {'secondi' if timestamps_are_seconds else 'ms'} (pagina corrente).")
 
     if overlapping_points:
         st.caption("Nota: per evitare sovrapposizione visiva tra tag nello stesso minuto, il grafico applica un leggero offset orizzontale ai punti.")
