@@ -178,10 +178,6 @@ def main() -> None:
     c3.metric("Rate", f"{rpm:.2f} segnali/min")
     c4.metric("Throughput", f"{thr:.2f} B/s")
 
-    st.caption(f"Pagina {int(page)} di {total_pages}")
-    if using_default_window:
-        st.caption("Filtro temporale di default attivo: ultima ora.")
-
     df = pd.DataFrame(rows, columns=["tag", "timestamp_ms", "value", "value_type", "quality", "payload_bytes"])
     if df.empty:
         st.warning("Nessun segnale trovato con i filtri impostati.")
@@ -189,6 +185,10 @@ def main() -> None:
         df["timestamp_ms"] = df["timestamp_ms"].apply(_normalize_epoch_ms)
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
         st.dataframe(df, use_container_width=True)
+
+    st.caption(f"Pagina {int(page)} di {total_pages}")
+    if using_default_window:
+        st.caption("Filtro temporale di default attivo: ultima ora.")
 
     chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
