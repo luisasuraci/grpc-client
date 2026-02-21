@@ -9,6 +9,32 @@ Client Python per il servizio `TheaService` con:
 - log su file con nome contenente il timestamp di avvio;
 - dashboard grafica con ricerca per tag o timestamp, rate segnali e throughput.
 
+## 0) Setup ambiente e installazione librerie
+
+
+> Requisiti consigliati: Python **3.11+**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+```
+
+Se vuoi verificare che gli import richiesti dal codice siano risolti:
+
+```bash
+python - <<'PY'
+import grpc
+import google.protobuf
+import sqlalchemy
+import pandas
+import plotly
+import streamlit
+print('OK: tutte le librerie principali sono installate')
+PY
+```
+
 ## 1) Generazione stub gRPC
 
 Il proto si trova in `proto/thea.proto`.
@@ -77,4 +103,15 @@ Funzionalità dashboard:
 
 ## 4) Dipendenze
 
-Vedi `requirements.txt`.
+Le librerie usate dal progetto sono in `requirements.txt`.
+
+Comando unico:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Pacchetti principali installati:
+- `grpcio`, `grpcio-tools`, `protobuf` (client gRPC e generazione stub);
+- `SQLAlchemy`, `psycopg2-binary`, `PyMySQL` (persistenza PostgreSQL/MariaDB);
+- `streamlit`, `pandas`, `plotly` (dashboard e metriche).
