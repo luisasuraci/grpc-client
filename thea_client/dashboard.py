@@ -179,8 +179,16 @@ def main() -> None:
         chart_df = chart_df.groupby([pd.Grouper(key="timestamp", freq="1Min"), "tag"]).size().reset_index(name="count")
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
-    fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag")
-    fig.update_traces(mode="lines+markers")
+    # Se la pagina corrente è molto densa su pochi istanti, il line chart sovrappone i punti
+    # e sembra mostrarne solo uno. In quel caso uso un bar chart per tag.
+    if chart_df["timestamp"].nunique() <= 2:
+        by_tag = chart_df.groupby("tag", as_index=False)["count"].sum().sort_values("count", ascending=False)
+        fig = px.bar(by_tag, x="tag", y="count", title="Segnali per tag (pagina corrente)")
+        fig.update_layout(xaxis_title="tag", yaxis_title="count")
+    else:
+        fig = px.line(chart_df, x="timestamp", y="count", color="tag", title="Rate segnali per tag")
+        fig.update_traces(mode="lines+markers")
+
     st.plotly_chart(fig, use_container_width=True)
 
 
