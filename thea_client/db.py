@@ -6,6 +6,7 @@ from typing import Iterable
 
 from sqlalchemy import DateTime, BigInteger, Integer, MetaData, String, create_engine, select, func, Float
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import URL
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
@@ -89,7 +90,14 @@ def create_db_engine(config: DbConfig) -> Engine:
     else:
         raise ValueError("backend deve essere 'postgresql' oppure 'mariadb'")
 
-    uri = f"{driver}://{config.username}:{config.password}@{config.host}:{config.port}/{config.database}"
+    uri = URL.create(
+        drivername=driver,
+        username=config.username,
+        password=config.password,
+        host=config.host,
+        port=config.port,
+        database=config.database,
+    )
     return create_engine(uri, pool_pre_ping=True, pool_recycle=1800)
 
 

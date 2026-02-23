@@ -78,6 +78,8 @@ Per MariaDB:
 
 `--target` indica l'endpoint di connessione (`host:port`), mentre `--grpc-host` imposta l'hostname TLS usato per la validazione mTLS (CN/SAN del certificato server).
 
+Nota: user/password DB sono passati tramite `SQLAlchemy URL.create`, quindi caratteri speciali come `@`, `:`, `/`, `%` sono gestiti correttamente senza escape manuale.
+
 Se ricevi `StatusCode.UNIMPLEMENTED` con messaggio `Method not found`, configura i nomi RPC del server:
 
 ```bash

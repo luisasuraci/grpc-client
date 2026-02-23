@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from sqlalchemy import and_, create_engine, func, select
+from sqlalchemy import URL, and_, create_engine, func, select
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -31,9 +31,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def db_uri(args: argparse.Namespace) -> str:
+def db_uri(args: argparse.Namespace) -> URL:
     scheme = "postgresql+psycopg2" if args.db_backend == "postgresql" else "mysql+pymysql"
-    return f"{scheme}://{args.db_user}:{args.db_password}@{args.db_host}:{args.db_port}/{args.db_name}"
+    return URL.create(
+        drivername=scheme,
+        username=args.db_user,
+        password=args.db_password,
+        host=args.db_host,
+        port=args.db_port,
+        database=args.db_name,
+    )
 
 
 def _clear_filters() -> None:
