@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from sqlalchemy import and_, create_engine, func, select
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 if __package__ in {None, ""}:
@@ -46,6 +48,30 @@ def _normalize_epoch_ms(value: int | None) -> int | None:
     return value * 1000 if value < 1_000_000_000_000 else value
 
 
+
+
+def _query_with_retry(engine, query_fn, retries: int = 3, base_delay_seconds: float = 0.5):
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            with Session(engine) as session:
+                return query_fn(session)
+        except (OperationalError, DBAPIError) as exc:
+            if isinstance(exc, DBAPIError) and not exc.connection_invalidated:
+                raise
+            last_exc = exc
+            engine.dispose()
+            if attempt == retries:
+                st.error("Connessione al database persa durante la query. Riprova tra pochi secondi.")
+                st.caption(f"Dettaglio tecnico: {exc}")
+                st.stop()
+            time.sleep(base_delay_seconds * attempt)
+    if last_exc is not None:
+        st.error("Connessione al database non disponibile.")
+        st.caption(f"Dettaglio tecnico: {last_exc}")
+        st.stop()
+    raise RuntimeError("Errore inatteso durante la query")
+
 def main() -> None:
     args = parse_args()
     engine = create_engine(db_uri(args), pool_pre_ping=True)
@@ -74,11 +100,13 @@ def main() -> None:
     if tag_filter.strip():
         tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
 
-    with Session(engine) as session:
+    def _load_max_ts_scope(session: Session) -> int | None:
         max_ts_scope_query = select(func.max(SignalRecord.timestamp_ms))
         if tag_conds:
             max_ts_scope_query = max_ts_scope_query.where(and_(*tag_conds))
-        max_ts_scope = session.execute(max_ts_scope_query).scalar_one()
+        return session.execute(max_ts_scope_query).scalar_one()
+
+    max_ts_scope = _query_with_retry(engine, _load_max_ts_scope)
 
     timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
     unit_factor = 1 if timestamps_are_seconds else 1000
@@ -105,7 +133,7 @@ def main() -> None:
     conds = [*tag_conds, *time_conds]
 
     # Chiamata 1: statistiche globali (metriche dashboard)
-    with Session(engine) as session:
+    def _load_metrics(session: Session):
         total = session.execute(select(func.count(SignalRecord.id))).scalar_one()
         filtered_count_query = select(func.count(SignalRecord.id))
         if conds:
@@ -121,14 +149,17 @@ def main() -> None:
         if conds:
             metrics_query = metrics_query.where(and_(*conds))
         count_signals, total_bytes, min_ts, max_ts = session.execute(metrics_query).one()
+        return total, filtered_total, count_signals, total_bytes, min_ts, max_ts
 
-        if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
-            rpm = 0.0
-            thr = 0.0
-        else:
-            span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
-            rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
-            thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
+    total, filtered_total, count_signals, total_bytes, min_ts, max_ts = _query_with_retry(engine, _load_metrics)
+
+    if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
+        rpm = 0.0
+        thr = 0.0
+    else:
+        span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
+        rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
+        thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
     pager1, pager2 = st.columns([1, 1])
     with pager1:
@@ -141,7 +172,7 @@ def main() -> None:
     chart_bucket_size = 60 if timestamps_are_seconds else 60000
 
     def load_table_rows() -> list[tuple]:
-        with Session(engine) as session:
+        def _run(session: Session) -> list[tuple]:
             base_filtered_query = select(
                 SignalRecord.tag,
                 SignalRecord.timestamp_ms,
@@ -161,8 +192,10 @@ def main() -> None:
             )
             return session.execute(table_query).all()
 
+        return _query_with_retry(engine, _run)
+
     def load_chart_rows() -> list[tuple]:
-        with Session(engine) as session:
+        def _run(session: Session) -> list[tuple]:
             chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
             chart_query = select(
                 SignalRecord.tag,
@@ -173,6 +206,8 @@ def main() -> None:
                 chart_query = chart_query.where(and_(*conds))
             chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
             return session.execute(chart_query).all()
+
+        return _query_with_retry(engine, _run)
 
     tag_filter_active = bool(tag_filter.strip())
 
