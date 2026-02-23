@@ -174,12 +174,15 @@ def main() -> None:
             chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
             return session.execute(chart_query).all()
 
+    tag_filter_active = bool(tag_filter.strip())
+
     with st.spinner("Caricamento tabella e grafico segnali in parallelo..."):
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        max_workers = 2 if tag_filter_active else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             rows_future = executor.submit(load_table_rows)
-            chart_future = executor.submit(load_chart_rows)
+            chart_future = executor.submit(load_chart_rows) if tag_filter_active else None
             rows = rows_future.result()
-            chart_rows = chart_future.result()
+            chart_rows = chart_future.result() if chart_future else []
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
@@ -199,6 +202,10 @@ def main() -> None:
     st.caption(f"Pagina {int(page)} di {total_pages}")
     if using_default_window:
         st.caption("Filtro temporale di default attivo: ultimi 15 minuti.")
+
+    if not tag_filter_active:
+        st.info("Grafico disponibile solo con filtro tag attivo.")
+        return
 
     chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
