@@ -6,6 +6,7 @@ Client Python per il servizio `SqService` con:
 - sottoscrizione `subscribeTags` su tutti i tag ricevuti;
 - autenticazione **mTLS** con `client.crt`, `client.key`, `rootca.crt`;
 - persistenza completa su DB (**PostgreSQL** o **MariaDB** selezionabile da parametro);
+- scrittura su tre tabelle: `signals` (raw), `signals_cast` (valori numerici troncati a 2 decimali), `signals_cast_key` (stesso contenuto con PK composta `tag,timestamp_ms,value_text`);
 - log su file con nome contenente il timestamp di avvio;
 - dashboard grafica con ricerca per tag o timestamp, rate segnali e throughput.
 

@@ -28,6 +28,37 @@ class SignalRecord(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+
+
+class SignalCastRecord(Base):
+    __tablename__ = "signals_cast"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    tag: Mapped[str] = mapped_column(String(255), index=True)
+    quality: Mapped[str] = mapped_column(String(64))
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    value_type: Mapped[str] = mapped_column(String(16))
+    value_text: Mapped[str] = mapped_column(String(255))
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SignalCastKeyRecord(Base):
+    __tablename__ = "signals_cast_key"
+
+    tag: Mapped[str] = mapped_column(String(255), primary_key=True)
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    value_text: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    quality: Mapped[str] = mapped_column(String(64))
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    value_type: Mapped[str] = mapped_column(String(16))
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class SubscriptionTag(Base):
     __tablename__ = "subscription_tags"
 

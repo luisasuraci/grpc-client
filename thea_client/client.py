@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,7 +13,15 @@ from datetime import datetime, timezone
 import grpc
 from sqlalchemy.orm import Session
 
-from thea_client.db import DbConfig, SignalRecord, create_db_engine, init_schema, save_subscription_tags
+from thea_client.db import (
+    DbConfig,
+    SignalCastKeyRecord,
+    SignalCastRecord,
+    SignalRecord,
+    create_db_engine,
+    init_schema,
+    save_subscription_tags,
+)
 
 import seaq_pb2
 
@@ -132,6 +141,16 @@ def decode_signal_value(signal: seaq_pb2.SqSignal) -> tuple[str, str]:
     return field, str(value)
 
 
+def cast_numeric_value(value_type: str, value_text: str) -> str:
+    if value_type not in {"float", "integer", "long"}:
+        return value_text
+    try:
+        numeric = Decimal(value_text)
+    except (InvalidOperation, ValueError):
+        return value_text
+    return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+
+
 def run_client(args: argparse.Namespace) -> None:
     logger, log_path = setup_logger(args.log_dir)
     run_id = uuid.uuid4().hex
@@ -189,25 +208,30 @@ def run_client(args: argparse.Namespace) -> None:
                 for packet in stream:
                     now = datetime.now(timezone.utc)
                     rows = []
+                    cast_rows = []
+                    cast_key_rows = []
                     for s in packet.signals:
                         value_type, value_text = decode_signal_value(s)
+                        cast_value_text = cast_numeric_value(value_type, value_text)
                         quality_name = seaq_pb2.SqQuality.Name(s.quality)
                         logger.info("signal tag=%s value=%s ts=%d quality=%s", s.tag, value_text, s.timestamp, quality_name)
-                        rows.append(
-                            SignalRecord(
-                                run_id=run_id,
-                                tag=s.tag,
-                                quality=quality_name,
-                                timestamp_ms=int(s.timestamp),
-                                unit=s.unit if s.HasField("unit") else None,
-                                value_type=value_type,
-                                value_text=value_text,
-                                payload_size_bytes=s.ByteSize(),
-                                received_at=now,
-                            )
+                        common_kwargs = dict(
+                            run_id=run_id,
+                            tag=s.tag,
+                            quality=quality_name,
+                            timestamp_ms=int(s.timestamp),
+                            unit=s.unit if s.HasField("unit") else None,
+                            value_type=value_type,
+                            payload_size_bytes=s.ByteSize(),
+                            received_at=now,
                         )
+                        rows.append(SignalRecord(value_text=value_text, **common_kwargs))
+                        cast_rows.append(SignalCastRecord(value_text=cast_value_text, **common_kwargs))
+                        cast_key_rows.append(SignalCastKeyRecord(value_text=cast_value_text, **common_kwargs))
                     if rows:
                         session.add_all(rows)
+                        session.add_all(cast_rows)
+                        session.add_all(cast_key_rows)
                         session.commit()
 
             backoff = 1
