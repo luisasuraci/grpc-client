@@ -19,7 +19,7 @@ else:
 DEFAULT_WINDOW_SECONDS = 900
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Dashboard segnali Thea")
+    parser = argparse.ArgumentParser(description="Dashboard segnali SeaQ")
     parser.add_argument("--db-backend", choices=["postgresql", "mariadb"], required=True)
     parser.add_argument("--db-host", required=True)
     parser.add_argument("--db-port", type=int, required=True)
@@ -50,8 +50,8 @@ def main() -> None:
     args = parse_args()
     engine = create_engine(db_uri(args), pool_pre_ping=True)
 
-    st.set_page_config(page_title="Thea Signals Dashboard", layout="wide")
-    st.title("TheaQ - Statistiche segnali")
+    st.set_page_config(page_title="SeaQ Signals Dashboard", layout="wide")
+    st.title("SeaQ - Statistiche segnali")
 
     st.session_state.setdefault("tag_filter", "")
     st.session_state.setdefault("start_ts", "")
