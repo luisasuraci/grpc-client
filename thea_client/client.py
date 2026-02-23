@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import grpc
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session
 
 from thea_client.db import (
@@ -151,6 +153,42 @@ def cast_numeric_value(value_type: str, value_text: str) -> str:
     return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 
+def upsert_signals_cast_key(session: Session, backend: str, rows: list[dict]) -> None:
+    if not rows:
+        return
+
+    backend = backend.lower()
+    if backend == "postgresql":
+        stmt = postgresql_insert(SignalCastKeyRecord).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["tag", "timestamp_ms", "value_text"],
+            set_={
+                "run_id": stmt.excluded.run_id,
+                "quality": stmt.excluded.quality,
+                "unit": stmt.excluded.unit,
+                "value_type": stmt.excluded.value_type,
+                "payload_size_bytes": stmt.excluded.payload_size_bytes,
+                "received_at": stmt.excluded.received_at,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+    elif backend in {"mariadb", "mysql"}:
+        stmt = mysql_insert(SignalCastKeyRecord).values(rows)
+        stmt = stmt.on_duplicate_key_update(
+            run_id=stmt.inserted.run_id,
+            quality=stmt.inserted.quality,
+            unit=stmt.inserted.unit,
+            value_type=stmt.inserted.value_type,
+            payload_size_bytes=stmt.inserted.payload_size_bytes,
+            received_at=stmt.inserted.received_at,
+            updated_at=stmt.inserted.updated_at,
+        )
+    else:
+        raise ValueError(f"backend non supportato per upsert: {backend}")
+
+    session.execute(stmt)
+
+
 def run_client(args: argparse.Namespace) -> None:
     logger, log_path = setup_logger(args.log_dir)
     run_id = uuid.uuid4().hex
@@ -227,11 +265,18 @@ def run_client(args: argparse.Namespace) -> None:
                         )
                         rows.append(SignalRecord(value_text=value_text, **common_kwargs))
                         cast_rows.append(SignalCastRecord(value_text=cast_value_text, **common_kwargs))
-                        cast_key_rows.append(SignalCastKeyRecord(value_text=cast_value_text, **common_kwargs))
+                        cast_key_rows.append(
+                            dict(
+                                value_text=cast_value_text,
+                                created_at=now,
+                                updated_at=now,
+                                **common_kwargs,
+                            )
+                        )
                     if rows:
                         session.add_all(rows)
                         session.add_all(cast_rows)
-                        session.add_all(cast_key_rows)
+                        upsert_signals_cast_key(session, args.db_backend, cast_key_rows)
                         session.commit()
 
             backoff = 1

@@ -57,6 +57,8 @@ class SignalCastKeyRecord(Base):
     value_type: Mapped[str] = mapped_column(String(16))
     payload_size_bytes: Mapped[int] = mapped_column(Integer)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class SubscriptionTag(Base):
