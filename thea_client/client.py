@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from thea_client.db import (
     DbConfig,
     SignalCastKeyRecord,
-    SignalCastRecord,
     SignalRecord,
     create_db_engine,
     init_schema,
@@ -248,7 +247,6 @@ def run_client(args: argparse.Namespace) -> None:
                 for packet in stream:
                     now = datetime.now(timezone.utc)
                     rows = []
-                    cast_rows = []
                     cast_key_rows = []
                     for s in packet.signals:
                         value_type, value_text = decode_signal_value(s)
@@ -266,7 +264,6 @@ def run_client(args: argparse.Namespace) -> None:
                             received_at=now,
                         )
                         rows.append(SignalRecord(value_text=value_text, **common_kwargs))
-                        cast_rows.append(SignalCastRecord(value_text=cast_value_text, **common_kwargs))
                         cast_key_rows.append(
                             dict(
                                 value_text=cast_value_text,
@@ -277,7 +274,6 @@ def run_client(args: argparse.Namespace) -> None:
                         )
                     if rows:
                         session.add_all(rows)
-                        session.add_all(cast_rows)
                         upsert_signals_cast_key(session, args.db_backend, cast_key_rows)
                         session.commit()
 
