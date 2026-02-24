@@ -6,6 +6,7 @@ from typing import Iterable
 
 from sqlalchemy import DateTime, BigInteger, Integer, MetaData, String, create_engine, select, func, Float
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import URL
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
@@ -26,6 +27,22 @@ class SignalRecord(Base):
     value_text: Mapped[str] = mapped_column(String(255))
     payload_size_bytes: Mapped[int] = mapped_column(Integer)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SignalCastKeyRecord(Base):
+    __tablename__ = "signals_cast_key"
+
+    tag: Mapped[str] = mapped_column(String(255), primary_key=True)
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    value_text: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    quality: Mapped[str] = mapped_column(String(64))
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    value_type: Mapped[str] = mapped_column(String(16))
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class SubscriptionTag(Base):
@@ -56,7 +73,14 @@ def create_db_engine(config: DbConfig) -> Engine:
     else:
         raise ValueError("backend deve essere 'postgresql' oppure 'mariadb'")
 
-    uri = f"{driver}://{config.username}:{config.password}@{config.host}:{config.port}/{config.database}"
+    uri = URL.create(
+        drivername=driver,
+        username=config.username,
+        password=config.password,
+        host=config.host,
+        port=config.port,
+        database=config.database,
+    )
     return create_engine(uri, pool_pre_ping=True, pool_recycle=1800)
 
 
