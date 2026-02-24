@@ -5,16 +5,26 @@ import logging
 import os
 import time
 import uuid
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import grpc
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session
 
-from thea_client.db import DbConfig, SignalRecord, create_db_engine, init_schema, save_subscription_tags
+from thea_client.db import (
+    DbConfig,
+    SignalCastKeyRecord,
+    SignalRecord,
+    create_db_engine,
+    init_schema,
+    save_subscription_tags,
+)
 
-import thea_pb2
+import seaq_pb2
 
 
 @dataclass(frozen=True)
@@ -27,7 +37,7 @@ class GrpcConfig:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Client TheaQ: getTags + subscribeTags con MTLS")
+    parser = argparse.ArgumentParser(description="Client SeaQ: getTags + subscribeTags con MTLS")
     parser.add_argument("--target", required=True, help="Target gRPC host:port usato per la connessione")
     parser.add_argument("--grpc-host", required=True, help="Hostname TLS atteso nel certificato server (CN/SAN)")
 
@@ -42,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-user", required=True)
     parser.add_argument("--db-password", required=True)
 
-    parser.add_argument("--rpc-service", default="TheaQ.TheaService", help="Nome servizio gRPC completo (es. TheaQ.TheaService)")
+    parser.add_argument("--rpc-service", default="SeaQ.SqService", help="Nome servizio gRPC completo (es. SeaQ.SqService)")
     parser.add_argument("--rpc-gettags", default="getTags", help="Nome metodo unary per recuperare i tag")
     parser.add_argument("--rpc-subscribetags", default="subscribeTags", help="Nome metodo stream per la subscribe")
 
@@ -53,9 +63,9 @@ def parse_args() -> argparse.Namespace:
 def setup_logger(log_dir: str) -> tuple[logging.Logger, str]:
     os.makedirs(log_dir, exist_ok=True)
     startup_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(log_dir, f"thea_client_{startup_ts}.log")
+    log_path = os.path.join(log_dir, f"seaq_client_{startup_ts}.log")
 
-    logger = logging.getLogger("thea-client")
+    logger = logging.getLogger("seaq-client")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 
@@ -98,11 +108,9 @@ def build_secure_channel(cfg: GrpcConfig) -> grpc.Channel:
 def _rpc_candidates(primary_service: str) -> list[str]:
     candidates = [primary_service]
     fallback = [
-        "TheaService",
-        "TheaQ.TheaService",
         "SqService",
         "SeaQ.SqService",
-        "sqbj.dataserver.service.grpc.definitions.TheaService",
+        "sqbj.dataserver.service.grpc.definitions.SqService",
     ]
     for c in fallback:
         if c not in candidates:
@@ -110,28 +118,76 @@ def _rpc_candidates(primary_service: str) -> list[str]:
     return candidates
 
 
-def _build_unary_call(channel: grpc.Channel, service: str, method: str) -> Callable[[thea_pb2.Void], thea_pb2.TheaSubscriptions]:
+def _build_unary_call(channel: grpc.Channel, service: str, method: str) -> Callable[[seaq_pb2.Void], seaq_pb2.SqSubscriptions]:
     return channel.unary_unary(
         f"/{service}/{method}",
-        request_serializer=thea_pb2.Void.SerializeToString,
-        response_deserializer=thea_pb2.TheaSubscriptions.FromString,
+        request_serializer=seaq_pb2.Void.SerializeToString,
+        response_deserializer=seaq_pb2.SqSubscriptions.FromString,
     )
 
 
-def _build_stream_call(channel: grpc.Channel, service: str, method: str) -> Callable[[thea_pb2.TheaSubscriptions], object]:
+def _build_stream_call(channel: grpc.Channel, service: str, method: str) -> Callable[[seaq_pb2.SqSubscriptions], object]:
     return channel.unary_stream(
         f"/{service}/{method}",
-        request_serializer=thea_pb2.TheaSubscriptions.SerializeToString,
-        response_deserializer=thea_pb2.TheaSignals.FromString,
+        request_serializer=seaq_pb2.SqSubscriptions.SerializeToString,
+        response_deserializer=seaq_pb2.SqSignals.FromString,
     )
 
 
-def decode_signal_value(signal: thea_pb2.TheaSignal) -> tuple[str, str]:
+def decode_signal_value(signal: seaq_pb2.SqSignal) -> tuple[str, str]:
     field = signal.WhichOneof("value")
     if field is None:
         return "none", ""
     value = getattr(signal, field)
     return field, str(value)
+
+
+def cast_numeric_value(value_type: str, value_text: str) -> str:
+    if value_type not in {"float", "integer", "long"}:
+        return value_text
+    try:
+        numeric = Decimal(value_text)
+        if not numeric.is_finite():
+            return value_text
+        return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError):
+        return value_text
+
+
+def upsert_signals_cast_key(session: Session, backend: str, rows: list[dict]) -> None:
+    if not rows:
+        return
+
+    backend = backend.lower()
+    if backend == "postgresql":
+        stmt = postgresql_insert(SignalCastKeyRecord).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["tag", "timestamp_ms", "value_text"],
+            set_={
+                "run_id": stmt.excluded.run_id,
+                "quality": stmt.excluded.quality,
+                "unit": stmt.excluded.unit,
+                "value_type": stmt.excluded.value_type,
+                "payload_size_bytes": stmt.excluded.payload_size_bytes,
+                "received_at": stmt.excluded.received_at,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+    elif backend in {"mariadb", "mysql"}:
+        stmt = mysql_insert(SignalCastKeyRecord).values(rows)
+        stmt = stmt.on_duplicate_key_update(
+            run_id=stmt.inserted.run_id,
+            quality=stmt.inserted.quality,
+            unit=stmt.inserted.unit,
+            value_type=stmt.inserted.value_type,
+            payload_size_bytes=stmt.inserted.payload_size_bytes,
+            received_at=stmt.inserted.received_at,
+            updated_at=stmt.inserted.updated_at,
+        )
+    else:
+        raise ValueError(f"backend non supportato per upsert: {backend}")
+
+    session.execute(stmt)
 
 
 def run_client(args: argparse.Namespace) -> None:
@@ -163,7 +219,7 @@ def run_client(args: argparse.Namespace) -> None:
             for service_name in _rpc_candidates(args.rpc_service):
                 get_tags = _build_unary_call(channel, service_name, args.rpc_gettags)
                 try:
-                    tags_response = get_tags(thea_pb2.Void(), timeout=20)
+                    tags_response = get_tags(seaq_pb2.Void(), timeout=20)
                     selected_service = service_name
                     logger.info("Service gRPC selezionato: %s", selected_service)
                     break
@@ -183,7 +239,7 @@ def run_client(args: argparse.Namespace) -> None:
             logger.info("Lista tag ricevuta da getTags (%d): %s", len(tags), ", ".join(tags))
             save_subscription_tags(engine, run_id, tags)
 
-            req = thea_pb2.TheaSubscriptions(tag=tags)
+            req = seaq_pb2.SqSubscriptions(tag=tags)
             subscribe_tags = _build_stream_call(channel, selected_service, args.rpc_subscribetags)
             stream = subscribe_tags(req)
 
@@ -191,25 +247,34 @@ def run_client(args: argparse.Namespace) -> None:
                 for packet in stream:
                     now = datetime.now(timezone.utc)
                     rows = []
+                    cast_key_rows = []
                     for s in packet.signals:
                         value_type, value_text = decode_signal_value(s)
-                        quality_name = thea_pb2.SqQuality.Name(s.quality)
+                        cast_value_text = cast_numeric_value(value_type, value_text)
+                        quality_name = seaq_pb2.SqQuality.Name(s.quality)
                         logger.info("signal tag=%s value=%s ts=%d quality=%s", s.tag, value_text, s.timestamp, quality_name)
-                        rows.append(
-                            SignalRecord(
-                                run_id=run_id,
-                                tag=s.tag,
-                                quality=quality_name,
-                                timestamp_ms=int(s.timestamp),
-                                unit=s.unit if s.HasField("unit") else None,
-                                value_type=value_type,
-                                value_text=value_text,
-                                payload_size_bytes=s.ByteSize(),
-                                received_at=now,
+                        common_kwargs = dict(
+                            run_id=run_id,
+                            tag=s.tag,
+                            quality=quality_name,
+                            timestamp_ms=int(s.timestamp),
+                            unit=s.unit if s.HasField("unit") else None,
+                            value_type=value_type,
+                            payload_size_bytes=s.ByteSize(),
+                            received_at=now,
+                        )
+                        rows.append(SignalRecord(value_text=value_text, **common_kwargs))
+                        cast_key_rows.append(
+                            dict(
+                                value_text=cast_value_text,
+                                created_at=now,
+                                updated_at=now,
+                                **common_kwargs,
                             )
                         )
                     if rows:
                         session.add_all(rows)
+                        upsert_signals_cast_key(session, args.db_backend, cast_key_rows)
                         session.commit()
 
             backoff = 1
