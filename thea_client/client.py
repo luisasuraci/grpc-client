@@ -148,9 +148,11 @@ def cast_numeric_value(value_type: str, value_text: str) -> str:
         return value_text
     try:
         numeric = Decimal(value_text)
+        if not numeric.is_finite():
+            return value_text
+        return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
     except (InvalidOperation, ValueError):
         return value_text
-    return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 
 def upsert_signals_cast_key(session: Session, backend: str, rows: list[dict]) -> None:
