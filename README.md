@@ -1,11 +1,12 @@
 # grpc-client
 
-Client Python per il servizio `TheaService` con:
+Client Python per il servizio `SqService` con:
 
 - chiamata `getTags` iniziale;
 - sottoscrizione `subscribeTags` su tutti i tag ricevuti;
 - autenticazione **mTLS** con `client.crt`, `client.key`, `rootca.crt`;
 - persistenza completa su DB (**PostgreSQL** o **MariaDB** selezionabile da parametro);
+- scrittura su due tabelle: `signals` (raw) e `signals_cast_key` (valori numerici troncati a 2 decimali, PK composta `tag,timestamp_ms,value_text`, upsert con tracking `created_at`/`updated_at`);
 - log su file con nome contenente il timestamp di avvio;
 - dashboard grafica con ricerca per tag o timestamp, rate segnali e throughput.
 
@@ -37,17 +38,17 @@ PY
 
 ## 1) Generazione stub gRPC
 
-Il proto si trova in `proto/thea.proto`.
+Il proto si trova in `proto/seaq.proto`.
 
 ```bash
 python -m grpc_tools.protoc \
   -I ./proto \
   --python_out=. \
   --grpc_python_out=. \
-  ./proto/thea.proto
+  ./proto/seaq.proto
 ```
 
-Questo comando genera `thea_pb2.py` e `thea_pb2_grpc.py` in root progetto.
+Questo comando genera `seaq_pb2.py` e `seaq_pb2_grpc.py` in root progetto.
 
 ## 2) Avvio client
 
@@ -64,7 +65,7 @@ python -m thea_client.client \
   --db-name thea \
   --db-user user \
   --db-password pass \
-  --rpc-service TheaQ.TheaService \
+  --rpc-service SeaQ.SqService \
   --rpc-gettags getTags \
   --rpc-subscribetags subscribeTags
 ```
@@ -77,13 +78,15 @@ Per MariaDB:
 
 `--target` indica l'endpoint di connessione (`host:port`), mentre `--grpc-host` imposta l'hostname TLS usato per la validazione mTLS (CN/SAN del certificato server).
 
+Nota: user/password DB sono passati tramite `SQLAlchemy URL.create`, quindi caratteri speciali come `@`, `:`, `/`, `%` sono gestiti correttamente senza escape manuale.
+
 Se ricevi `StatusCode.UNIMPLEMENTED` con messaggio `Method not found`, configura i nomi RPC del server:
 
 ```bash
 --rpc-service <Package.Service> --rpc-gettags <nome_metodo_get> --rpc-subscribetags <nome_metodo_subscribe>
 ```
 
-Il client prova anche automaticamente alcuni service name comuni (es. `TheaService`, `TheaQ.TheaService`, `SqService`) per ridurre problemi di compatibilità.
+Il client prova anche automaticamente alcuni service name comuni (es. `SqService`, `SeaQ.SqService`, `TheaService`) per ridurre problemi di compatibilità.
 
 ### Keepalive / connessione persistente
 
@@ -93,7 +96,7 @@ Il client imposta keepalive HTTP/2 su gRPC e, in caso di errore, tenta automatic
 
 - Prima della subscribe viene scritto un log con **tutti i tag** ottenuti da `getTags`.
 - Ogni segnale ricevuto viene loggato con `tag`, `value`, `timestamp`, `quality`.
-- File log: `logs/thea_client_YYYYMMDD_HHMMSS.log`.
+- File log: `logs/seaq_client_YYYYMMDD_HHMMSS.log`.
 
 ## 3) Avvio dashboard
 

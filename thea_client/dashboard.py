@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from sqlalchemy import and_, create_engine, func, select
+from sqlalchemy import URL, and_, create_engine, func, select
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 if __package__ in {None, ""}:
@@ -15,10 +18,10 @@ else:
     from .db import SignalRecord
 
 
-DEFAULT_WINDOW_SECONDS = 3600
+DEFAULT_WINDOW_SECONDS = 900
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Dashboard segnali Thea")
+    parser = argparse.ArgumentParser(description="Dashboard segnali SeaQ")
     parser.add_argument("--db-backend", choices=["postgresql", "mariadb"], required=True)
     parser.add_argument("--db-host", required=True)
     parser.add_argument("--db-port", type=int, required=True)
@@ -28,9 +31,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def db_uri(args: argparse.Namespace) -> str:
+def db_uri(args: argparse.Namespace) -> URL:
     scheme = "postgresql+psycopg2" if args.db_backend == "postgresql" else "mysql+pymysql"
-    return f"{scheme}://{args.db_user}:{args.db_password}@{args.db_host}:{args.db_port}/{args.db_name}"
+    return URL.create(
+        drivername=scheme,
+        username=args.db_user,
+        password=args.db_password,
+        host=args.db_host,
+        port=args.db_port,
+        database=args.db_name,
+    )
 
 
 def _clear_filters() -> None:
@@ -45,12 +55,36 @@ def _normalize_epoch_ms(value: int | None) -> int | None:
     return value * 1000 if value < 1_000_000_000_000 else value
 
 
+
+
+def _query_with_retry(engine, query_fn, retries: int = 3, base_delay_seconds: float = 0.5):
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            with Session(engine) as session:
+                return query_fn(session)
+        except (OperationalError, DBAPIError) as exc:
+            if isinstance(exc, DBAPIError) and not exc.connection_invalidated:
+                raise
+            last_exc = exc
+            engine.dispose()
+            if attempt == retries:
+                st.error("Connessione al database persa durante la query. Riprova tra pochi secondi.")
+                st.caption(f"Dettaglio tecnico: {exc}")
+                st.stop()
+            time.sleep(base_delay_seconds * attempt)
+    if last_exc is not None:
+        st.error("Connessione al database non disponibile.")
+        st.caption(f"Dettaglio tecnico: {last_exc}")
+        st.stop()
+    raise RuntimeError("Errore inatteso durante la query")
+
 def main() -> None:
     args = parse_args()
     engine = create_engine(db_uri(args), pool_pre_ping=True)
 
-    st.set_page_config(page_title="Thea Signals Dashboard", layout="wide")
-    st.title("TheaQ - Statistiche segnali")
+    st.set_page_config(page_title="SeaQ Signals Dashboard", layout="wide")
+    st.title("SeaQ - Statistiche segnali")
 
     st.session_state.setdefault("tag_filter", "")
     st.session_state.setdefault("start_ts", "")
@@ -73,11 +107,13 @@ def main() -> None:
     if tag_filter.strip():
         tag_conds.append(SignalRecord.tag.ilike(f"%{tag_filter.strip()}%"))
 
-    with Session(engine) as session:
+    def _load_max_ts_scope(session: Session) -> int | None:
         max_ts_scope_query = select(func.max(SignalRecord.timestamp_ms))
         if tag_conds:
             max_ts_scope_query = max_ts_scope_query.where(and_(*tag_conds))
-        max_ts_scope = session.execute(max_ts_scope_query).scalar_one()
+        return session.execute(max_ts_scope_query).scalar_one()
+
+    max_ts_scope = _query_with_retry(engine, _load_max_ts_scope)
 
     timestamps_are_seconds = max_ts_scope is not None and int(max_ts_scope) < 1_000_000_000_000
     unit_factor = 1 if timestamps_are_seconds else 1000
@@ -104,7 +140,7 @@ def main() -> None:
     conds = [*tag_conds, *time_conds]
 
     # Chiamata 1: statistiche globali (metriche dashboard)
-    with Session(engine) as session:
+    def _load_metrics(session: Session):
         total = session.execute(select(func.count(SignalRecord.id))).scalar_one()
         filtered_count_query = select(func.count(SignalRecord.id))
         if conds:
@@ -120,14 +156,17 @@ def main() -> None:
         if conds:
             metrics_query = metrics_query.where(and_(*conds))
         count_signals, total_bytes, min_ts, max_ts = session.execute(metrics_query).one()
+        return total, filtered_total, count_signals, total_bytes, min_ts, max_ts
 
-        if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
-            rpm = 0.0
-            thr = 0.0
-        else:
-            span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
-            rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
-            thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
+    total, filtered_total, count_signals, total_bytes, min_ts, max_ts = _query_with_retry(engine, _load_metrics)
+
+    if not count_signals or min_ts is None or max_ts is None or max_ts == min_ts:
+        rpm = 0.0
+        thr = 0.0
+    else:
+        span_seconds = (int(max_ts) - int(min_ts)) / unit_factor
+        rpm = (float(count_signals) / (span_seconds / 60.0)) if span_seconds > 0 else 0.0
+        thr = (float(total_bytes) / span_seconds) if span_seconds > 0 else 0.0
 
     pager1, pager2 = st.columns([1, 1])
     with pager1:
@@ -137,28 +176,55 @@ def main() -> None:
         page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1)
     offset = (int(page) - 1) * page_size
 
-    # Chiamata 2: dettaglio tabella + dati grafico
-    with Session(engine) as session:
-        base_filtered_query = select(
-            SignalRecord.tag,
-            SignalRecord.timestamp_ms,
-            SignalRecord.value_text,
-            SignalRecord.value_type,
-            SignalRecord.quality,
-            SignalRecord.payload_size_bytes,
-        )
-        if conds:
-            base_filtered_query = base_filtered_query.where(and_(*conds))
+    chart_bucket_size = 60 if timestamps_are_seconds else 60000
 
-        table_query = (
-            base_filtered_query
-            .order_by(SignalRecord.timestamp_ms.asc())
-            .offset(offset)
-            .limit(page_size)
-        )
-        with st.spinner("Caricamento tabella segnali..."):
-            rows = session.execute(table_query).all()
+    def load_table_rows() -> list[tuple]:
+        def _run(session: Session) -> list[tuple]:
+            base_filtered_query = select(
+                SignalRecord.tag,
+                SignalRecord.timestamp_ms,
+                SignalRecord.value_text,
+                SignalRecord.value_type,
+                SignalRecord.quality,
+                SignalRecord.payload_size_bytes,
+            )
+            if conds:
+                base_filtered_query = base_filtered_query.where(and_(*conds))
 
+            table_query = (
+                base_filtered_query
+                .order_by(SignalRecord.timestamp_ms.asc(), SignalRecord.id.asc())
+                .offset(offset)
+                .limit(page_size)
+            )
+            return session.execute(table_query).all()
+
+        return _query_with_retry(engine, _run)
+
+    def load_chart_rows() -> list[tuple]:
+        def _run(session: Session) -> list[tuple]:
+            chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
+            chart_query = select(
+                SignalRecord.tag,
+                chart_bucket_expr,
+                func.count(SignalRecord.id).label("count"),
+            )
+            if conds:
+                chart_query = chart_query.where(and_(*conds))
+            chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
+            return session.execute(chart_query).all()
+
+        return _query_with_retry(engine, _run)
+
+    tag_filter_active = bool(tag_filter.strip())
+
+    with st.spinner("Caricamento tabella e grafico segnali in parallelo..."):
+        max_workers = 2 if tag_filter_active else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            rows_future = executor.submit(load_table_rows)
+            chart_future = executor.submit(load_chart_rows) if tag_filter_active else None
+            rows = rows_future.result()
+            chart_rows = chart_future.result() if chart_future else []
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Totale segnali", total)
@@ -172,34 +238,23 @@ def main() -> None:
     else:
         df["timestamp_ms"] = df["timestamp_ms"].apply(_normalize_epoch_ms)
         df["timestamp"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
+        df = df.sort_values(["timestamp_ms", "tag"], kind="stable").reset_index(drop=True)
         st.dataframe(df, use_container_width=True)
 
     st.caption(f"Pagina {int(page)} di {total_pages}")
     if using_default_window:
-        st.caption("Filtro temporale di default attivo: ultima ora.")
+        st.caption("Filtro temporale di default attivo: ultimi 15 minuti.")
 
-    chart_loading = st.empty()
-    chart_loading.info("Caricamento grafico segnali in corso...")
-    with Session(engine) as session:
-        chart_bucket_size = 60 if timestamps_are_seconds else 60000
-        chart_bucket_expr = (func.floor(SignalRecord.timestamp_ms / chart_bucket_size) * chart_bucket_size).label("bucket_ts")
-        chart_query = select(
-            SignalRecord.tag,
-            chart_bucket_expr,
-            func.count(SignalRecord.id).label("count"),
-        )
-        if conds:
-            chart_query = chart_query.where(and_(*conds))
-        chart_query = chart_query.group_by(SignalRecord.tag, chart_bucket_expr)
-        chart_rows = session.execute(chart_query).all()
-    chart_loading.empty()
+    if not tag_filter_active:
+        st.info("Grafico disponibile solo con filtro tag attivo.")
+        return
 
     chart_df = pd.DataFrame(chart_rows, columns=["tag", "timestamp_raw", "count"])
     if chart_df.empty:
         st.info("Nessun dato disponibile per il grafico con i filtri correnti.")
         return
 
-    with st.spinner("Rendering grafico segnali..."):
+    with st.spinner("Rendering grafico segnali (tutti i tag nel range filtrato) in corso..."):
         chart_df["timestamp_raw"] = pd.to_numeric(chart_df["timestamp_raw"], errors="coerce")
         chart_df = chart_df.dropna(subset=["timestamp_raw"])
         if chart_df.empty:
@@ -209,28 +264,28 @@ def main() -> None:
         chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp_ms"], unit="ms", utc=True)
         chart_df = chart_df.sort_values(["tag", "timestamp"])
 
-    # Manteniamo sempre il line chart. Quando quasi tutti i tag cadono nello stesso minuto,
-    # i punti si sovrappongono; applichiamo un offset minimo sull'asse X solo per visualizzazione.
-    chart_df["timestamp_plot"] = chart_df["timestamp"]
-    overlapping_points = chart_df["timestamp"].nunique() <= 2
-    if overlapping_points:
-        chart_df["_tag_idx"] = chart_df["tag"].astype("category").cat.codes
-        chart_df["timestamp_plot"] = chart_df["timestamp"] + pd.to_timedelta(chart_df["_tag_idx"] * 120, unit="ms")
+        chart_df["timestamp_plot"] = chart_df["timestamp"]
+        overlapping_points = chart_df["timestamp"].nunique() <= 2
+        if overlapping_points:
+            chart_df["_tag_idx"] = chart_df["tag"].astype("category").cat.codes
+            chart_df["timestamp_plot"] = chart_df["timestamp"] + pd.to_timedelta(chart_df["_tag_idx"] * 120, unit="ms")
 
-    fig = px.line(
-        chart_df,
-        x="timestamp_plot",
-        y="count",
-        color="tag",
-        title="Rate segnali per tag",
-        render_mode="webgl",
-    )
-    if len(chart_df) > 5000:
-        fig.update_traces(mode="lines")
-    else:
-        fig.update_traces(mode="lines+markers", marker={"size": 8})
-    fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
-    st.plotly_chart(fig, use_container_width=True)
+        fig = px.line(
+            chart_df,
+            x="timestamp_plot",
+            y="count",
+            color="tag",
+            title="Rate segnali per tag",
+            render_mode="webgl",
+        )
+        if len(chart_df) > 5000:
+            fig.update_traces(mode="lines")
+        else:
+            fig.update_traces(mode="lines+markers", marker={"size": 8})
+        fig.update_layout(xaxis_title="timestamp", yaxis_title="count")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(f"Bucket grafico attuale: {chart_bucket_size} {'secondi' if timestamps_are_seconds else 'ms'} (tutti i tag).")
 
     if overlapping_points:
         st.caption("Nota: per evitare sovrapposizione visiva tra tag nello stesso minuto, il grafico applica un leggero offset orizzontale ai punti.")

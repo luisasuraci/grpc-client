@@ -1,1 +1,1 @@
-"""Thea gRPC client package."""
+"""SeaQ gRPC client package."""
