@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import uuid
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -149,7 +149,7 @@ def cast_numeric_value(value_type: str, value_text: str) -> str:
         numeric = Decimal(value_text)
         if not numeric.is_finite():
             return value_text
-        return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+        return str(numeric.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     except (InvalidOperation, ValueError):
         return value_text
 
