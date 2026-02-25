@@ -1,22 +1,22 @@
 syntax = "proto3";
-package TheaQ;
+package SeaQ;
 
 option java_package = "sqbj.dataserver.service.grpc.definitions";
 
-service TheaService {
-    rpc getTags(Void) returns (TheaSubscriptions) {}
-    rpc subscribeTags(TheaSubscriptions) returns (stream TheaSignals) {}
-    rpc unsubscribeTags(TheaSubscriptions) returns (Void) {}
+service SqService {
+    rpc getTags(Void) returns (SqSubscriptions) {}
+    rpc subscribeTags(SqSubscriptions) returns (stream SqSignals) {}
+    rpc unsubscribeTags(SqSubscriptions) returns (Void) {}
 }
 
 message Void {}
 
-message TheaSubscriptions {
+message SqSubscriptions {
     repeated string tag = 1;
 }
 
-message TheaSignals {
-    repeated TheaSignal signals = 1;
+message SqSignals {
+    repeated SqSignal signals = 1;
 }
 
 enum SqQuality {
@@ -38,7 +38,7 @@ enum SqQuality {
     OVER_RANGE = 902;
 }
 
-message TheaSignal {
+message SqSignal {
     string tag = 1;
     SqQuality quality = 2;
     uint64 timestamp = 3;
