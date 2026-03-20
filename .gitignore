@@ -1,4 +1,6 @@
-__pycache__/
-*.pyc
-.venv/
-logs/*.log
+bin/
+obj/
+logs/
+.vs/
+*.user
+*.suo

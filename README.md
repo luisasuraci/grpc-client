@@ -1,59 +1,51 @@
 # grpc-client
 
-Client Python per il servizio `SqService` con:
+Client **C# / .NET 8** per il servizio `SqService`, con logica equivalente tra client gRPC, persistenza completa su DB e dashboard web.
 
-- chiamata `getTags` iniziale;
-- sottoscrizione `subscribeTags` su tutti i tag ricevuti;
-- autenticazione **mTLS** con `client.crt`, `client.key`, `rootca.crt`;
-- persistenza completa su DB (**PostgreSQL** o **MariaDB** selezionabile da parametro);
-- scrittura su due tabelle: `signals` (raw) e `signals_cast_key` (valori numerici arrotondati matematicamente a 2 decimali, PK composta `tag,timestamp_ms,value_text`, upsert con tracking `created_at`/`updated_at`);
-- log su file con nome contenente il timestamp di avvio;
-- dashboard grafica con ricerca per tag o timestamp, rate segnali e throughput.
+## Funzionalità
 
-## 0) Setup ambiente e installazione librerie
+Il progetto include due applicazioni C#:
 
+- `SeaQ.GrpcClient`: client gRPC con mTLS che:
+  - chiama `getTags` all'avvio;
+  - salva tutti i tag ricevuti nella tabella `subscription_tags`;
+  - esegue la subscribe `subscribeTags` sui tag ricevuti;
+  - persiste ogni segnale in `signals`;
+  - persiste anche la vista deduplicata `signals_cast_key` con cast numerico e arrotondamento matematico a 2 decimali;
+  - scrive log su console e file `logs/seaq_client_YYYYMMDD_HHMMSS.log`;
+  - gestisce keepalive HTTP/2 e riconnessione automatica con backoff esponenziale.
+- `SeaQ.Dashboard`: dashboard web ASP.NET Core che mostra:
+  - filtro tag (`contains`);
+  - filtro timestamp start/end in epoch ms;
+  - tabella segnali paginata;
+  - metriche: totale segnali, segnali filtrati, rate segnali/min, throughput B/s;
+  - grafico rate per tag con bucket temporali;
+  - finestra di default sugli ultimi 15 minuti se non sono impostati filtri temporali.
 
-> Requisiti consigliati: Python **3.11+**
+## Struttura repository
+
+- `src/SeaQ.Common`: libreria condivisa con modelli, parser CLI, log, schema SQL e accesso DB.
+- `src/SeaQ.GrpcClient`: eseguibile console per acquisizione gRPC e persistenza.
+- `src/SeaQ.Dashboard`: dashboard web.
+- `proto/seaq.proto`: contratto gRPC utilizzato per generare i tipi C#.
+
+## Requisiti
+
+- .NET SDK 8.0+
+- PostgreSQL oppure MariaDB
+- certificati `client.crt`, `client.key`, `rootca.crt`
+
+## Restore e build
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+dotnet restore SeaQ.Client.sln
+dotnet build SeaQ.Client.sln
 ```
 
-Se vuoi verificare che gli import richiesti dal codice siano risolti:
+## Avvio client gRPC
 
 ```bash
-python - <<'PY'
-import grpc
-import google.protobuf
-import sqlalchemy
-import pandas
-import plotly
-import streamlit
-print('OK: tutte le librerie principali sono installate')
-PY
-```
-
-## 1) Generazione stub gRPC
-
-Il proto si trova in `proto/seaq.proto`.
-
-```bash
-python -m grpc_tools.protoc \
-  -I ./proto \
-  --python_out=. \
-  --grpc_python_out=. \
-  ./proto/seaq.proto
-```
-
-Questo comando genera `seaq_pb2.py` e `seaq_pb2_grpc.py` in root progetto.
-
-## 2) Avvio client
-
-```bash
-python -m thea_client.client \
+dotnet run --project src/SeaQ.GrpcClient -- \
   --target <HOST:PORT> \
   --grpc-host <TLS_SERVER_HOSTNAME> \
   --rootca rootca.crt \
@@ -76,32 +68,23 @@ Per MariaDB:
 --db-backend mariadb --db-port 3306
 ```
 
-`--target` indica l'endpoint di connessione (`host:port`), mentre `--grpc-host` imposta l'hostname TLS usato per la validazione mTLS (CN/SAN del certificato server).
+Parametri principali:
 
-Nota: user/password DB sono passati tramite `SQLAlchemy URL.create`, quindi caratteri speciali come `@`, `:`, `/`, `%` sono gestiti correttamente senza escape manuale.
+- `--target`: endpoint gRPC `host:port`.
+- `--grpc-host`: hostname TLS usato per validare il certificato server.
+- `--rpc-service`, `--rpc-gettags`, `--rpc-subscribetags`: override dei nomi RPC.
+- `--log-dir`: directory dei log, default `logs`.
 
-Se ricevi `StatusCode.UNIMPLEMENTED` con messaggio `Method not found`, configura i nomi RPC del server:
+Il client prova automaticamente anche alcuni service name alternativi:
 
-```bash
---rpc-service <Package.Service> --rpc-gettags <nome_metodo_get> --rpc-subscribetags <nome_metodo_subscribe>
-```
+- `SqService`
+- `SeaQ.SqService`
+- `sqbj.dataserver.service.grpc.definitions.SqService`
 
-Il client prova anche automaticamente alcuni service name comuni (es. `SqService`, `SeaQ.SqService`, `TheaService`) per ridurre problemi di compatibilità.
-
-### Keepalive / connessione persistente
-
-Il client imposta keepalive HTTP/2 su gRPC e, in caso di errore, tenta automaticamente la riconnessione con backoff esponenziale.
-
-### Logging richiesto
-
-- Prima della subscribe viene scritto un log con **tutti i tag** ottenuti da `getTags`.
-- Ogni segnale ricevuto viene loggato con `tag`, `value`, `timestamp`, `quality`.
-- File log: `logs/seaq_client_YYYYMMDD_HHMMSS.log`.
-
-## 3) Avvio dashboard
+## Avvio dashboard
 
 ```bash
-streamlit run thea_client/dashboard.py -- \
+dotnet run --project src/SeaQ.Dashboard -- \
   --db-backend postgresql \
   --db-host 127.0.0.1 \
   --db-port 5432 \
@@ -110,26 +93,27 @@ streamlit run thea_client/dashboard.py -- \
   --db-password pass
 ```
 
-> Esegui il comando dalla root del repository (`grpc-client`).
-
-Funzionalità dashboard:
-- filtro tag (contains);
-- filtro intervallo timestamp (epoch ms);
-- tabella segnali dal DB;
-- metriche: totale segnali, rate (segnali/min), throughput (B/s);
-- grafico temporale del rate per tag.
-
-## 4) Dipendenze
-
-Le librerie usate dal progetto sono in `requirements.txt`.
-
-Comando unico:
+Per cambiare porta HTTP:
 
 ```bash
-python -m pip install -r requirements.txt
+--urls http://0.0.0.0:8080
 ```
 
-Pacchetti principali installati:
-- `grpcio`, `grpcio-tools`, `protobuf` (client gRPC e generazione stub);
-- `SQLAlchemy`, `psycopg2-binary`, `PyMySQL` (persistenza PostgreSQL/MariaDB);
-- `streamlit`, `pandas`, `plotly` (dashboard e metriche).
+Poi apri il browser su `http://localhost:5000` oppure sull'URL configurato.
+
+## Note DB
+
+Le applicazioni creano automaticamente le tabelle:
+
+- `signals`
+- `signals_cast_key`
+- `subscription_tags`
+
+`signals_cast_key` usa chiave primaria composta `tag,timestamp_ms,value_text` e upsert backend-specifico:
+
+- PostgreSQL: `ON CONFLICT ... DO UPDATE`
+- MariaDB: `ON DUPLICATE KEY UPDATE`
+
+## Proto
+
+Se modifichi `proto/seaq.proto`, i tipi C# vengono rigenerati automaticamente in build tramite `Grpc.Tools`.
