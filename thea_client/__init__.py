@@ -1,1 +1,0 @@
-"""SeaQ gRPC client package."""
