@@ -86,7 +86,7 @@ Se ricevi `StatusCode.UNIMPLEMENTED` con messaggio `Method not found`, configura
 --rpc-service <Package.Service> --rpc-gettags <nome_metodo_get> --rpc-subscribetags <nome_metodo_subscribe>
 ```
 
-Il client prova anche automaticamente alcuni service name comuni (es. `SqService`, `SeaQ.SqService`, `TheaService`) per ridurre problemi di compatibilità.
+Il client prova anche automaticamente alcuni service name comuni (es. `SqService`, `SeaQ.SqService`, `sqbj.dataserver.service.grpc.definitions.SqService`) per ridurre problemi di compatibilità.
 
 ### Keepalive / connessione persistente
 
@@ -97,6 +97,52 @@ Il client imposta keepalive HTTP/2 su gRPC e, in caso di errore, tenta automatic
 - Prima della subscribe viene scritto un log con **tutti i tag** ottenuti da `getTags`.
 - Ogni segnale ricevuto viene loggato con `tag`, `value`, `timestamp`, `quality`.
 - File log: `logs/seaq_client_YYYYMMDD_HHMMSS.log`.
+
+
+## 2-bis) Client equivalente in C#
+
+È disponibile anche un client C# che replica il comportamento del client Python:
+
+- connessione gRPC con **mTLS** e keepalive configurato lato channel;
+- chiamata iniziale `getTags`;
+- subscribe `subscribeTags` su tutti i tag ricevuti;
+- persistenza su **PostgreSQL** o **MariaDB** nelle stesse tabelle (`signals`, `signals_cast_key`, `subscription_tags`);
+- log su file `logs/seaq_client_YYYYMMDD_HHMMSS.log`;
+- riconnessione automatica con backoff esponenziale.
+
+### Build
+
+```bash
+cd csharp_client
+dotnet restore
+dotnet build
+```
+
+### Avvio
+
+```bash
+dotnet run --project csharp_client/GrpcClient.CSharp.csproj -- \
+  --target <HOST:PORT> \
+  --grpc-host <TLS_SERVER_HOSTNAME> \
+  --rootca rootca.crt \
+  --client-crt client.crt \
+  --client-key client.key \
+  --db-backend postgresql \
+  --db-host 127.0.0.1 \
+  --db-port 5432 \
+  --db-name thea \
+  --db-user user \
+  --db-password pass \
+  --rpc-service SeaQ.SqService \
+  --rpc-gettags getTags \
+  --rpc-subscribetags subscribeTags
+```
+
+Per MariaDB:
+
+```bash
+--db-backend mariadb --db-port 3306
+```
 
 ## 3) Avvio dashboard
 
